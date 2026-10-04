@@ -2,6 +2,7 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <math.h>
 
 // ==========================================
 // PIN DEFINITIONS FOR ESP32-C3 SUPERMINI
@@ -17,80 +18,45 @@ constexpr int OLED_RESET = -1;
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 uint8_t oledAddress = 0x3C;
-bool oledFound = false;
-bool rtcFound = false;
-uint8_t foundDevices[8];
-uint8_t foundDeviceCount = 0;
 
-void scanI2CBus() {
-  Serial.println("\n--- Starting I2C Bus Scan (SDA: GPIO 4, SCL: GPIO 5) ---");
-  foundDeviceCount = 0;
-  oledFound = false;
-  rtcFound = false;
+// Center coordinates for 128x64 display
+constexpr int CX = 64;
+constexpr int CY = 32;
 
-  for (uint8_t address = 1; address < 127; ++address) {
-    Wire.beginTransmission(address);
-    uint8_t error = Wire.endTransmission();
-
-    if (error == 0) {
-      Serial.printf("  [+] I2C device found at address 0x%02X", address);
-      if (address == 0x3C || address == 0x3D) {
-        Serial.print(" (SSD1306 OLED Display)");
-        oledAddress = address;
-        oledFound = true;
-      } else if (address == 0x68) {
-        Serial.print(" (DS3231 RTC Module)");
-        rtcFound = true;
-      }
-      Serial.println();
-
-      if (foundDeviceCount < sizeof(foundDevices)) {
-        foundDevices[foundDeviceCount++] = address;
-      }
-    }
-  }
-
-  if (foundDeviceCount == 0) {
-    Serial.println("  [!] WARNING: No I2C devices found! Check wiring, pull-ups, and power.");
-  } else {
-    Serial.printf("--- Scan Complete. Total devices found: %u ---\n\n", foundDeviceCount);
-  }
-}
+// Arm length for rotating indicator
+constexpr float ROT_RADIUS = 24.0f;
+constexpr float ORBIT_RADIUS = 20.0f;
 
 void setup() {
   pinMode(ONBOARD_LED_PIN, OUTPUT);
-  digitalWrite(ONBOARD_LED_PIN, HIGH); // LED OFF initially (active low)
+  digitalWrite(ONBOARD_LED_PIN, HIGH); // LED OFF initially
 
   Serial.begin(115200);
-  delay(1500); // Allow USB CDC serial monitor to attach
+  delay(1000);
 
-  Serial.println("==========================================");
-  Serial.println("   SENU — ESP32-C3 Hardware Diagnostics  ");
-  Serial.println("   Milestone M0: OLED & I2C Verification  ");
+  Serial.println("\n==========================================");
+  Serial.println("   SENU: 0.96\" OLED Visual Motion Test    ");
+  Serial.println("   Static Cross + Rotating Element Test   ");
   Serial.println("==========================================");
 
-  // Initialize I2C with explicit pins for SuperMini
+  // Initialize I2C bus explicitly
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-  Wire.setClock(400000); // 400kHz Fast Mode
+  Wire.setClock(400000); // 400kHz Fast Mode for smooth 30 FPS animation
 
-  scanI2CBus();
-
-  // Try discovered OLED address first, fallback to 0x3C then 0x3D
-  bool displayInitialized = false;
-  if (oledFound) {
-    displayInitialized = display.begin(SSD1306_SWITCHCAPVCC, oledAddress);
-  }
-  if (!displayInitialized) {
-    displayInitialized = display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
-    if (displayInitialized) oledAddress = 0x3C;
-  }
-  if (!displayInitialized) {
-    displayInitialized = display.begin(SSD1306_SWITCHCAPVCC, 0x3D);
-    if (displayInitialized) oledAddress = 0x3D;
+  // Try standard SSD1306 address 0x3C, fallback to 0x3D
+  bool displayReady = display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  if (displayReady) {
+    oledAddress = 0x3C;
+  } else {
+    displayReady = display.begin(SSD1306_SWITCHCAPVCC, 0x3D);
+    if (displayReady) {
+      oledAddress = 0x3D;
+    }
   }
 
-  if (!displayInitialized) {
-    Serial.println("\n[FATAL] SSD1306 allocation failed. Check VCC (3.3V/5V), GND, SDA(4), SCL(5).");
+  if (!displayReady) {
+    Serial.println("[FATAL] SSD1306 OLED not found at 0x3C or 0x3D!");
+    Serial.println("Check: SDA->GPIO 4, SCL->GPIO 5, VCC->3.3V, GND->GND");
     while (true) {
       // Rapid SOS blink on failure
       digitalWrite(ONBOARD_LED_PIN, LOW);  delay(100);
@@ -98,82 +64,115 @@ void setup() {
     }
   }
 
-  Serial.printf("[SUCCESS] SSD1306 OLED initialized at address 0x%02X!\n", oledAddress);
+  Serial.printf("[SUCCESS] SSD1306 OLED online at 0x%02X! Starting animation...\n", oledAddress);
 
-  // Render Splash & Diagnostic Test
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
-
-  // Draw Header
   display.setTextSize(1);
-  display.setCursor(16, 2);
-  display.println("SENU APPLIANCE");
-  display.drawLine(0, 12, 127, 12, SSD1306_WHITE);
-
-  // Status Info
-  display.setCursor(0, 18);
-  display.printf("OLED: OK (0x%02X)\n", oledAddress);
-  display.printf("RTC : %s\n", rtcFound ? "FOUND (0x68)" : "NOT CONNECTED");
-  display.printf("I2C Devices: %u\n", foundDeviceCount);
-
-  // Draw full frame boundary to verify screen resolution and edges
-  display.drawRect(0, 0, 128, 64, SSD1306_WHITE);
-  display.setCursor(4, 52);
-  display.print("Milestone M0 Ready");
-
+  display.setCursor(18, 20);
+  display.println("OLED DETECTED!");
+  display.setCursor(18, 36);
+  display.printf("Address: 0x%02X", oledAddress);
   display.display();
-  delay(3000);
+  delay(1500);
 }
 
 void loop() {
-  static unsigned long lastSecond = 0;
-  static uint32_t counter = 0;
+  static float angleDeg = 0.0f;
+  static uint32_t frameCount = 0;
+  static unsigned long lastSerialLog = 0;
   static bool ledState = false;
 
-  unsigned long currentMillis = millis();
+  display.clearDisplay();
 
-  if (currentMillis - lastSecond >= 1000) {
-    lastSecond = currentMillis;
-    counter++;
+  // -------------------------------------------------------------
+  // 1. OUTER BORDER (Tests display matrix bounds: 0,0 to 127,63)
+  // -------------------------------------------------------------
+  display.drawRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SSD1306_WHITE);
 
-    // Toggle onboard LED heartbeat (active low)
+  // -------------------------------------------------------------
+  // 2. STATIC CROSS & RETICLE (Centered at CX=64, CY=32)
+  // -------------------------------------------------------------
+  // Horizontal arm with tick marks
+  display.drawLine(CX - 26, CY, CX + 26, CY, SSD1306_WHITE);
+  display.drawLine(CX - 26, CY - 2, CX - 26, CY + 2, SSD1306_WHITE);
+  display.drawLine(CX + 26, CY - 2, CX + 26, CY + 2, SSD1306_WHITE);
+
+  // Vertical arm with tick marks
+  display.drawLine(CX, CY - 24, CX, CY + 24, SSD1306_WHITE);
+  display.drawLine(CX - 2, CY - 24, CX + 2, CY - 24, SSD1306_WHITE);
+  display.drawLine(CX - 2, CY + 24, CX + 2, CY + 24, SSD1306_WHITE);
+
+  // Static central circular target reticle
+  display.drawCircle(CX, CY, 10, SSD1306_WHITE);
+  display.drawPixel(CX, CY, SSD1306_WHITE);
+
+  // -------------------------------------------------------------
+  // 3. ROTATING ELEMENT (Smooth continuous rotation around cross)
+  // -------------------------------------------------------------
+  float rad = angleDeg * (PI / 180.0f);
+
+  // Rotating needle vector
+  int xTip = CX + (int)(ROT_RADIUS * cos(rad));
+  int yTip = CY + (int)(ROT_RADIUS * sin(rad));
+  display.drawLine(CX, CY, xTip, yTip, SSD1306_WHITE);
+
+  // Orbiting satellite diamond / marker at tip
+  int xOrbit = CX + (int)(ORBIT_RADIUS * cos(rad));
+  int yOrbit = CY + (int)(ORBIT_RADIUS * sin(rad));
+  display.fillRect(xOrbit - 2, yOrbit - 2, 5, 5, SSD1306_WHITE);
+
+  // Counter-rotating orbital dot on the opposite side (180 deg out of phase)
+  float radOpposite = rad + PI;
+  int xOpposite = CX + (int)((ORBIT_RADIUS - 6) * cos(radOpposite));
+  int yOpposite = CY + (int)((ORBIT_RADIUS - 6) * sin(radOpposite));
+  display.drawCircle(xOpposite, yOpposite, 2, SSD1306_WHITE);
+
+  // -------------------------------------------------------------
+  // 4. CORNER TELEMETRY LABELS
+  // -------------------------------------------------------------
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  // Top-left label
+  display.setCursor(4, 4);
+  display.print("SENU");
+
+  // Top-right label
+  display.setCursor(94, 4);
+  display.print("0.96\"");
+
+  // Bottom-left angle indicator
+  display.setCursor(4, 52);
+  display.printf("%3d", (int)angleDeg);
+  display.drawCircle(25, 53, 1, SSD1306_WHITE); // Degree symbol
+
+  // Bottom-right frame indicator
+  display.setCursor(76, 52);
+  display.printf("#%lu", frameCount % 10000);
+
+  // Commit frame buffer to OLED over I2C
+  display.display();
+
+  // -------------------------------------------------------------
+  // 5. MOTION UPDATE & LOGGING
+  // -------------------------------------------------------------
+  angleDeg += 4.0f; // 4 degrees per frame (~90 frames for full 360 deg turn)
+  if (angleDeg >= 360.0f) {
+    angleDeg -= 360.0f;
+  }
+  frameCount++;
+
+  // Log heartbeat to Serial and toggle LED every second
+  unsigned long now = millis();
+  if (now - lastSerialLog >= 1000) {
+    lastSerialLog = now;
     ledState = !ledState;
-    digitalWrite(ONBOARD_LED_PIN, ledState ? LOW : HIGH);
+    digitalWrite(ONBOARD_LED_PIN, ledState ? LOW : HIGH); // Active-low heartbeat
 
-    // Refresh dynamic test display
-    display.clearDisplay();
-
-    // Outer border to verify (0,0) to (127,63) pixel bounds
-    display.drawRect(0, 0, 128, 64, SSD1306_WHITE);
-
-    // Title Bar
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(4, 4);
-    display.print("SENU M0: OLED TEST");
-    display.drawLine(2, 14, 125, 14, SSD1306_WHITE);
-
-    // Diagnostics
-    display.setCursor(4, 18);
-    display.printf("Addr: 0x%02X | 400kHz\n", oledAddress);
-
-    display.setCursor(4, 28);
-    display.printf("Uptime: %lus", currentMillis / 1000);
-
-    display.setCursor(4, 38);
-    display.printf("Frames: #%lu", counter);
-
-    // Heartbeat indicator and animated progress bar
-    int barWidth = (counter % 20) * 6;
-    display.drawRect(4, 50, 120, 8, SSD1306_WHITE);
-    display.fillRect(6, 52, barWidth, 4, SSD1306_WHITE);
-
-    display.display();
-
-    // Serial Heartbeat
-    Serial.printf("[Heartbeat #%lu] Uptime: %lus | OLED: 0x%02X | LED: %s\n",
-                  counter, currentMillis / 1000, oledAddress, ledState ? "ON" : "OFF");
+    Serial.printf("[OLED Alive] Uptime: %lus | Frames: %lu | Angle: %d deg | Addr: 0x%02X\n",
+                  now / 1000, frameCount, (int)angleDeg, oledAddress);
   }
 
-  delay(20);
+  delay(30); // ~30-33 FPS refresh rate
 }

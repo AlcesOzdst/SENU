@@ -64,3 +64,18 @@ This logbook serves as the chronological research and development journal for th
   - Added root `platformio.ini` pointing `src_dir`, `include_dir`, and `lib_dir` into `/firmware` so PlatformIO IDE extension immediately recognizes the root project, surfaces the bottom toolbar icons (Build checkmark, Upload arrow, Serial monitor plug), and enables sidebar task tree.
 * **Next Action:** Build verification and flash OLED test firmware to ESP32-C3 SuperMini.
 
+---
+
+### [2026-10-04 17:48:24 +05:30] — 0.96" OLED Visual Motion Test (Static Cross & Rotating Sweep)
+* **Author:** Antigravity & Parth
+* **Milestone:** M0 — OLED Hardware Bring-up & Display Verification
+* **Objective:** Implement a dynamic visual test program to verify that the 0.96" 128×64 SSD1306 OLED display initializes reliably, refreshes cleanly without artifacts, and responds to real-time coordinate transformations.
+* **Implementation Details (`firmware/src/main.cpp`):**
+  - **Static Cross:** Rendered fixed reticle with center crosshairs (`CX=64, CY=32`), end tick marks, and central 10px target ring.
+  - **Rotating Dynamic Element:** Trigonometric rotation vector (`R=24px`) sweeping smoothly at 4°/frame (~30 FPS refresh rate over 400kHz I²C bus), with an orbiting satellite diamond and counter-phase orbital dot.
+  - **Boundary Verification:** Full 128×64 outer rectangle verifying display driver mapping from pixel (0,0) to (127,63).
+  - **Live Telemetry:** On-screen real-time rotation angle (`0°–359°`) and rolling frame counter.
+  - **Hardware Heartbeat:** ESP32-C3 SuperMini onboard blue LED (GPIO 8) toggles every second alongside serial output at 115200 baud.
+* **Build Verification:** Successfully compiled under PlatformIO Core (`[SUCCESS] Took 5.60 seconds`).
+
+
