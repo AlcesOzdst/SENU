@@ -29,6 +29,7 @@ constexpr int USABLE_HEIGHT = 42;   // Active height: 64 - 22 = 42 pixels
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 RTC_DS3231 rtc;
 bool rtcFound = false;
+bool displayNeedsUpdate = true;
 
 // ==========================================
 // APP STATE & SCREENS
@@ -244,9 +245,18 @@ void setup() {
   if (rtc.begin()) {
     rtcFound = true;
     Serial.println("[RTC] DS3231 detected successfully!");
-    if (rtc.lostPower()) {
-      Serial.println("[RTC] Battery lost power! Setting time to compile time.");
-      rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    
+    // Hold encoder knob OR tactile button during boot to force re-sync with PC compile time!
+    bool forceSync = (digitalRead(ENCODER_SW_PIN) == LOW) || (digitalRead(PAUSE_BTN_PIN) == LOW);
+    if (rtc.lostPower() || forceSync) {
+      DateTime compileTime = DateTime(F(__DATE__), F(__TIME__)) + TimeSpan(0, 0, 0, 6);
+      rtc.adjust(compileTime);
+      Serial.printf("[RTC] Synced time to PC build timestamp (+6s): %02d:%02d:%02d\n",
+                    compileTime.hour(), compileTime.minute(), compileTime.second());
+    } else {
+      DateTime cur = rtc.now();
+      Serial.printf("[RTC] Current clock: %02d:%02d:%02d\n", cur.hour(), cur.minute(), cur.second());
+      Serial.println("[RTC] Tip: Type 'SET HH:MM' in Serial Monitor to set time, or hold knob on boot to sync!");
     }
   } else {
     Serial.println("[RTC] Warning: DS3231 not found on I2C bus (offline fallback).");
@@ -438,7 +448,6 @@ void loop() {
   static bool buttonWasPressed = false;
   static int lastButtonState = HIGH;
   static bool ledState = false;
-  static bool displayNeedsUpdate = true;
 
   // 16-State Quadrature Transition Table
   static const int8_t qeTable[16] = {
@@ -451,6 +460,38 @@ void loop() {
   static int8_t accumulatedSteps = 0;
 
   unsigned long now = millis();
+
+  // -------------------------------------------------------------
+  // Live Serial Commands for Clock Adjustment (e.g. SET 01:48)
+  // -------------------------------------------------------------
+  if (Serial.available()) {
+    String line = Serial.readStringUntil('\n');
+    line.trim();
+    if (line.startsWith("SET ") || line.startsWith("set ")) {
+      int h = -1, m = -1, s = 0;
+      int parsed = sscanf(line.c_str() + 4, "%d:%d:%d", &h, &m, &s);
+      if (parsed < 2) {
+        parsed = sscanf(line.c_str() + 4, "%d:%d", &h, &m);
+      }
+      if (parsed >= 2 && h >= 0 && h < 24 && m >= 0 && m < 60) {
+        if (rtcFound) {
+          DateTime cur = rtc.now();
+          rtc.adjust(DateTime(cur.year(), cur.month(), cur.day(), h, m, s));
+          Serial.printf("[RTC] Clock successfully adjusted to %02d:%02d:%02d!\n", h, m, s);
+          displayNeedsUpdate = true;
+        }
+      } else {
+        Serial.println("[RTC] Format error! Use: SET HH:MM (e.g. SET 01:48)");
+      }
+    } else if (line.equalsIgnoreCase("SYNC")) {
+      if (rtcFound) {
+        DateTime compileTime = DateTime(F(__DATE__), F(__TIME__)) + TimeSpan(0, 0, 0, 6);
+        rtc.adjust(compileTime);
+        Serial.printf("[RTC] Synced to build time: %02d:%02d:%02d\n", compileTime.hour(), compileTime.minute(), compileTime.second());
+        displayNeedsUpdate = true;
+      }
+    }
+  }
 
   // -------------------------------------------------------------
   // 0. Update Harry Potter Theme Buzzer Melody & Flashing LED
