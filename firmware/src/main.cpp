@@ -45,20 +45,20 @@ ScreenState currentScreen = SCREEN_MENU;
 
 const char *menuItems[] = {
   "1. Focus Timer",
-  "2. Alarm (06:00)",
+  "2. Alarm Setup",
   "3. PC Metrics",
   "4. Tasks (Sync)"
 };
 constexpr int TOTAL_MENU_ITEMS = sizeof(menuItems) / sizeof(menuItems[0]);
 int selectedMenuIndex = 0;
 
-// Focus Timer State
+// Focus Timer State (Supports 1-minute sessions!)
 bool timerRunning = false;
-int focusMinutes = 25;
+int focusMinutes = 25; // Dialable from 1 min to 90 min
 uint32_t timerEndEpoch = 0;
 uint32_t timerRemainingSeconds = 25 * 60;
 
-// Alarm State (Scheduled for 06:00 AM)
+// Alarm State (Dialable to any minute, default 06:00 AM)
 int alarmHour = 6;
 int alarmMinute = 0;
 bool alarmEnabled = true;
@@ -66,15 +66,32 @@ bool alarmTriggered = false;
 unsigned long alarmTriggerStartTime = 0;
 
 // ==========================================
-// BUZZER & ALARM CADENCE (Non-Blocking)
+// BIZARRE BUZZER & ALARM CADENCE (Non-Blocking)
 // ==========================================
 void triggerAlarmBeep(unsigned long now) {
   if (alarmTriggered) {
-    // 3 rhythmic pulses every 1000ms: beep-beep-beep ... pause
-    unsigned long phase = now % 1000;
-    bool beep = (phase < 100) || (phase >= 160 && phase < 260) || (phase >= 320 && phase < 420);
+    // BIZARRE ALARM CADENCE: 1.2-second repeating cycle
+    // Chaotic sci-fi alien machine-gun stutter + syncopated wild triplets
+    unsigned long phase = now % 1200;
+    bool beep = false;
+
+    if (phase < 200) {
+      // 1. Rapid laser stutter (5 ultra-fast 20ms machine-gun chirps)
+      beep = ((phase / 20) % 2) == 0;
+    } else if (phase >= 250 && phase < 450) {
+      // 2. Syncopated wild triplet: long-short-long
+      beep = (phase < 330) || (phase >= 360 && phase < 390) || (phase >= 415);
+    } else if (phase >= 500 && phase < 650) {
+      // 3. Frantic heartbeat double-thump
+      beep = (phase < 560) || (phase >= 590 && phase < 640);
+    } else if (phase >= 720 && phase < 840) {
+      // 4. Glitch micro-burst (12ms pulses)
+      beep = ((phase / 12) % 2) == 0;
+    }
+    // 840ms to 1200ms: Tense quiet pause before restarting
+
     digitalWrite(BUZZER_PIN, beep ? HIGH : LOW);
-    digitalWrite(ONBOARD_LED_PIN, beep ? LOW : HIGH); // Synchronized LED flash
+    digitalWrite(ONBOARD_LED_PIN, beep ? LOW : HIGH); // Synchronized frantic LED
   } else {
     digitalWrite(BUZZER_PIN, LOW);
   }
@@ -103,7 +120,7 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println("\n[BOOT] SENU ESP32-C3 Starting (experiments branch)...");
-  Serial.printf("[ALARM] Scheduled for %02d:%02d AM\n", alarmHour, alarmMinute);
+  Serial.printf("[ALARM] Initialized for %02d:%02d\n", alarmHour, alarmMinute);
   Serial.println("[PINS] Buzzer -> GPIO 6 | Tactile Push Button -> GPIO 7");
 
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
@@ -195,20 +212,16 @@ void renderFocusTimer() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(4, 24);
-  display.print(timerRunning ? "FOCUS ACTIVE (POMO)" : "FOCUS PAUSED (POMO)");
-  display.drawLine(2, 33, 125, 33, SSD1306_WHITE);
-
-  // Compute remaining time from RTC epoch
-  if (timerRunning && rtcFound) {
-    int32_t diff = (int32_t)(timerEndEpoch - rtc.now().unixtime());
-    if (diff <= 0) {
-      timerRemainingSeconds = 0;
-      timerRunning = false;  // Session finished!
-      alarmTriggered = true; // Sound buzzer on session complete
-    } else {
-      timerRemainingSeconds = diff;
-    }
+  if (alarmTriggered) {
+    display.print("*** TIME'S UP! ***");
+  } else if (timerRunning) {
+    display.print("FOCUS ACTIVE (POMO)");
+  } else if (timerRemainingSeconds < (uint32_t)(focusMinutes * 60)) {
+    display.print("FOCUS PAUSED (POMO)");
+  } else {
+    display.print("SET FOCUS DURATION");
   }
+  display.drawLine(2, 33, 125, 33, SSD1306_WHITE);
 
   int mins = timerRemainingSeconds / 60;
   int secs = timerRemainingSeconds % 60;
@@ -218,8 +231,16 @@ void renderFocusTimer() {
   display.printf("%02d:%02d", mins, secs);
 
   display.setTextSize(1);
-  display.setCursor(6, 53);
-  display.print("[Btn:Pause Click:Start]");
+  display.setCursor(4, 53);
+  if (alarmTriggered) {
+    display.print("[Push Btn to Mute]");
+  } else if (timerRunning) {
+    display.print("[Btn:Pause Hold:Menu]");
+  } else if (timerRemainingSeconds < (uint32_t)(focusMinutes * 60)) {
+    display.print("[Btn:Resume Clk:Start]");
+  } else {
+    display.print("[Dial:Min  Clk:Start]");
+  }
 }
 
 void renderAlarmScreen() {
@@ -228,7 +249,7 @@ void renderAlarmScreen() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(4, 24);
-  display.printf("ALARM: %02d:%02d AM", alarmHour, alarmMinute);
+  display.printf("ALARM: %02d:%02d", alarmHour, alarmMinute);
   display.drawLine(2, 33, 125, 33, SSD1306_WHITE);
 
   if (alarmTriggered) {
@@ -246,7 +267,7 @@ void renderAlarmScreen() {
     display.printf("Status: %s", alarmEnabled ? "ENABLED (ON)" : "DISABLED (OFF)");
 
     display.setCursor(6, 52);
-    display.print("[Knob:Turn Click:Toggle]");
+    display.print("[Dial:Min Btn:Test]");
   }
 }
 
@@ -309,38 +330,81 @@ void loop() {
   unsigned long now = millis();
 
   // -------------------------------------------------------------
-  // 0. Update Alarm Buzzer Audio & Flashing LED
+  // 0. Update Bizarre Alarm Buzzer Audio & Flashing LED
   // -------------------------------------------------------------
   triggerAlarmBeep(now);
 
   // -------------------------------------------------------------
-  // 1. Check Real-Time Clock Alarm (Tomorrow at 6:00:00 AM)
+  // 1. Check Real-Time Clock Alarm (Matches exact minute)
   // -------------------------------------------------------------
   static unsigned long lastAlarmCheck = 0;
   if (rtcFound && (now - lastAlarmCheck >= 1000)) {
     lastAlarmCheck = now;
     DateTime currentTime = rtc.now();
 
-    // Check if current time matches scheduled alarm (06:00:00 AM)
+    // Check if current time matches scheduled alarm
     if (alarmEnabled && !alarmTriggered) {
       if (currentTime.hour() == alarmHour && currentTime.minute() == alarmMinute && currentTime.second() == 0) {
         alarmTriggered = true;
         alarmTriggerStartTime = now;
         currentScreen = SCREEN_ALARM;
         displayNeedsUpdate = true;
-        Serial.println("[ALARM] >>> WAKE UP! Alarm triggered at 06:00 AM! <<<");
+        Serial.printf("[ALARM] >>> BIZARRE ALARM TRIGGERED at %02d:%02d! <<<\n", alarmHour, alarmMinute);
       }
     }
 
-    // Auto-silence after 5 minutes if untouched
-    if (alarmTriggered && (now - alarmTriggerStartTime > 300000)) {
+    // Auto-silence after 3 minutes if untouched
+    if (alarmTriggered && (now - alarmTriggerStartTime > 180000)) {
       alarmTriggered = false;
       displayNeedsUpdate = true;
     }
   }
 
   // -------------------------------------------------------------
-  // 2. Dedicated Tactile Push Button (GPIO 7) - Pause / Snooze
+  // 1b. Check Focus Timer Countdown (Global non-blocking timer)
+  // -------------------------------------------------------------
+  if (timerRunning) {
+    if (rtcFound) {
+      int32_t diff = (int32_t)(timerEndEpoch - rtc.now().unixtime());
+      if (diff <= 0) {
+        timerRemainingSeconds = 0;
+        timerRunning = false;
+        alarmTriggered = true;
+        alarmTriggerStartTime = now;
+        currentScreen = SCREEN_FOCUS_TIMER; // Switch to timer screen when complete
+        displayNeedsUpdate = true;
+        Serial.println("[POMO] Session COMPLETE! Bizarre alarm triggered!");
+      } else {
+        if (timerRemainingSeconds != (uint32_t)diff) {
+          timerRemainingSeconds = diff;
+          if (currentScreen == SCREEN_FOCUS_TIMER) {
+            displayNeedsUpdate = true;
+          }
+        }
+      }
+    } else {
+      static unsigned long lastTimerTick = 0;
+      if (now - lastTimerTick >= 1000) {
+        lastTimerTick = now;
+        if (timerRemainingSeconds > 0) {
+          timerRemainingSeconds--;
+        }
+        if (timerRemainingSeconds == 0) {
+          timerRunning = false;
+          alarmTriggered = true;
+          alarmTriggerStartTime = now;
+          currentScreen = SCREEN_FOCUS_TIMER;
+          displayNeedsUpdate = true;
+          Serial.println("[POMO] Session COMPLETE! Bizarre alarm triggered!");
+        } else if (currentScreen == SCREEN_FOCUS_TIMER) {
+          displayNeedsUpdate = true;
+        }
+      }
+    }
+  }
+
+  // -------------------------------------------------------------
+  // 2. Dedicated Tactile Push Button (GPIO 7) - Pause / Snooze / Test
   // -------------------------------------------------------------
   int currentTactileState = digitalRead(PAUSE_BTN_PIN);
   if (currentTactileState == LOW && lastTactileState == HIGH && (now - lastTactileCheck > 150)) {
@@ -356,10 +420,21 @@ void loop() {
     } else if (currentScreen == SCREEN_FOCUS_TIMER) {
       // Tactile button PAUSES / RESUMES the Pomodoro timer!
       timerRunning = !timerRunning;
-      if (timerRunning && rtcFound) {
-        timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+      if (timerRunning) {
+        if (timerRemainingSeconds == 0) {
+          timerRemainingSeconds = focusMinutes * 60;
+        }
+        if (rtcFound) {
+          timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+        }
       }
       Serial.printf("[TACTILE_BTN] Focus Timer -> Running: %d\n", timerRunning);
+      displayNeedsUpdate = true;
+    } else if (currentScreen == SCREEN_ALARM) {
+      // In Alarm screen: Pressing tactile button test-fires the bizarre alarm!
+      alarmTriggered = true;
+      alarmTriggerStartTime = now;
+      Serial.println("[ALARM] Test-firing bizarre buzzer!");
       displayNeedsUpdate = true;
     } else {
       // Quick tactile feedback
@@ -396,15 +471,20 @@ void loop() {
           Serial.printf("[ENC] Menu Scroll -> Index: %d\n", selectedMenuIndex);
           displayNeedsUpdate = true;
         } else if (currentScreen == SCREEN_FOCUS_TIMER && !timerRunning) {
-          focusMinutes += delta * 5;
-          if (focusMinutes < 5) focusMinutes = 5;
+          // 1-minute steps! Dial all the way down to 1 minute!
+          focusMinutes += delta;
+          if (focusMinutes < 1) focusMinutes = 1;
           if (focusMinutes > 90) focusMinutes = 90;
           timerRemainingSeconds = focusMinutes * 60;
+          Serial.printf("[POMO] Focus set to: %d min\n", focusMinutes);
           displayNeedsUpdate = true;
         } else if (currentScreen == SCREEN_ALARM) {
-          // Dial alarm hour up or down (0 to 23)
-          alarmHour = (alarmHour + delta + 24) % 24;
-          Serial.printf("[ALARM] Set to %02d:%02d AM\n", alarmHour, alarmMinute);
+          // Dial alarm in 1-minute steps (00:00 to 23:59)
+          int totalAlarmMins = alarmHour * 60 + alarmMinute;
+          totalAlarmMins = (totalAlarmMins + delta + 1440) % 1440;
+          alarmHour = totalAlarmMins / 60;
+          alarmMinute = totalAlarmMins % 60;
+          Serial.printf("[ALARM] Set to %02d:%02d\n", alarmHour, alarmMinute);
           displayNeedsUpdate = true;
         }
       }
@@ -458,8 +538,13 @@ void loop() {
       Serial.printf("[BTN] Selected Screen: %d\n", currentScreen);
     } else if (currentScreen == SCREEN_FOCUS_TIMER) {
       timerRunning = !timerRunning;
-      if (timerRunning && rtcFound) {
-        timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+      if (timerRunning) {
+        if (timerRemainingSeconds == 0) {
+          timerRemainingSeconds = focusMinutes * 60;
+        }
+        if (rtcFound) {
+          timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+        }
       }
       Serial.printf("[BTN] Focus Timer toggled -> Running: %d\n", timerRunning);
     } else if (currentScreen == SCREEN_ALARM) {
