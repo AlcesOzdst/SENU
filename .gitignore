@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Environment
+.env
+
+# PlatformIO
+.pio/
+.vscode/
+
+# OS/editor
+.DS_Store
+.idea/
