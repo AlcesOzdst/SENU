@@ -14,11 +14,11 @@ constexpr int ONBOARD_LED_PIN = 8; // SuperMini blue LED (Active LOW)
 // Rotary Encoder Pins
 constexpr int ENCODER_CLK_PIN = 0; // Quadrature A
 constexpr int ENCODER_DT_PIN = 1;  // Quadrature B
-constexpr int ENCODER_SW_PIN = 3;  // Push switch (Active LOW)
+constexpr int ENCODER_SW_PIN = 3;  // Encoder built-in push switch (Active LOW)
 
 // Experimental Hardware Pins (Branch: experiments)
-constexpr int BUZZER_PIN = 6;      // Piezo/Active Buzzer Output
-constexpr int TAP_SWITCH_PIN = 7;  // Tap / Slap Switch (Active LOW, internal pull-up)
+constexpr int BUZZER_PIN = 6;      // Piezo/Active Buzzer Output (Pin 10 on right header)
+constexpr int PAUSE_BTN_PIN = 7;   // External Tactile Push Button (Active LOW, Pin 11 on right header)
 
 // Display Calibrated Geometry
 constexpr int SCREEN_WIDTH = 128;
@@ -58,7 +58,7 @@ int focusMinutes = 25;
 uint32_t timerEndEpoch = 0;
 uint32_t timerRemainingSeconds = 25 * 60;
 
-// Alarm State (Experimental: 06:00 AM Alarm)
+// Alarm State (Scheduled for 06:00 AM)
 int alarmHour = 6;
 int alarmMinute = 0;
 bool alarmEnabled = true;
@@ -82,7 +82,7 @@ void triggerAlarmBeep(unsigned long now) {
 
 void soundShortChirp() {
   digitalWrite(BUZZER_PIN, HIGH);
-  delay(15);
+  delay(12);
   digitalWrite(BUZZER_PIN, LOW);
 }
 
@@ -98,12 +98,13 @@ void setup() {
   // Setup Experimental Hardware Pins
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
-  pinMode(TAP_SWITCH_PIN, INPUT_PULLUP);
+  pinMode(PAUSE_BTN_PIN, INPUT_PULLUP); // External tactile push button to GND
 
   Serial.begin(115200);
   delay(500);
   Serial.println("\n[BOOT] SENU ESP32-C3 Starting (experiments branch)...");
   Serial.printf("[ALARM] Scheduled for %02d:%02d AM\n", alarmHour, alarmMinute);
+  Serial.println("[PINS] Buzzer -> GPIO 6 | Tactile Push Button -> GPIO 7");
 
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   Wire.setClock(100000);
@@ -128,14 +129,14 @@ void setup() {
     Serial.println("[RTC] Warning: DS3231 not found on I2C bus (offline fallback).");
   }
 
-  // Startup audio chirp
+  // Startup confirmation chirp
   soundShortChirp();
 }
 
 void renderMenu() {
   display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT, SSD1306_WHITE);
 
-  // Header Title at Y = 24 with Live Real-World Time & Alarm Bell Icon
+  // Header Title at Y = 24 with Live Real-World Time & Pin Telemetry
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(4, 24);
@@ -154,11 +155,11 @@ void renderMenu() {
     display.print("SENU MENU");
   }
 
-  // Live Hardware Diagnostic: M:[Index] P:[CLK][DT][SW]
-  display.setCursor(60, 24);
-  display.printf("M:%d P:%d%d%d", selectedMenuIndex,
+  // Live Hardware Diagnostic: M:[Index] P:[CLK][DT][SW][Btn]
+  display.setCursor(56, 24);
+  display.printf("M:%d P:%d%d%d%d", selectedMenuIndex,
                  digitalRead(ENCODER_CLK_PIN), digitalRead(ENCODER_DT_PIN),
-                 digitalRead(ENCODER_SW_PIN));
+                 digitalRead(ENCODER_SW_PIN), digitalRead(PAUSE_BTN_PIN));
 
   display.drawLine(2, 33, 125, 33, SSD1306_WHITE);
 
@@ -202,7 +203,7 @@ void renderFocusTimer() {
     int32_t diff = (int32_t)(timerEndEpoch - rtc.now().unixtime());
     if (diff <= 0) {
       timerRemainingSeconds = 0;
-      timerRunning = false; // Session finished!
+      timerRunning = false;  // Session finished!
       alarmTriggered = true; // Sound buzzer on session complete
     } else {
       timerRemainingSeconds = diff;
@@ -218,7 +219,7 @@ void renderFocusTimer() {
 
   display.setTextSize(1);
   display.setCursor(6, 53);
-  display.print("[Tap:Pause Click:Start]");
+  display.print("[Btn:Pause Click:Start]");
 }
 
 void renderAlarmScreen() {
@@ -239,7 +240,7 @@ void renderAlarmScreen() {
 
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(6, 53);
-    display.print("[Tap Switch: Snooze]");
+    display.print("[Push Btn: Snooze]");
   } else {
     display.setCursor(6, 37);
     display.printf("Status: %s", alarmEnabled ? "ENABLED (ON)" : "DISABLED (OFF)");
@@ -287,9 +288,9 @@ void renderTasks() {
 void loop() {
   static unsigned long buttonPressStart = 0;
   static unsigned long lastButtonCheck = 0;
-  static unsigned long lastTapCheck = 0;
+  static unsigned long lastTactileCheck = 0;
   static unsigned long lastClockTick = 0;
-  static int lastTapState = HIGH;
+  static int lastTactileState = HIGH;
   static bool buttonWasPressed = false;
   static int lastButtonState = HIGH;
   static bool ledState = false;
@@ -339,35 +340,36 @@ void loop() {
   }
 
   // -------------------------------------------------------------
-  // 2. Tap Switch (GPIO 7) - Slap-to-Pause / Snooze Alarm
+  // 2. Dedicated Tactile Push Button (GPIO 7) - Pause / Snooze
   // -------------------------------------------------------------
-  int currentTapState = digitalRead(TAP_SWITCH_PIN);
-  if (currentTapState == LOW && lastTapState == HIGH && (now - lastTapCheck > 200)) {
-    lastTapCheck = now;
+  int currentTactileState = digitalRead(PAUSE_BTN_PIN);
+  if (currentTactileState == LOW && lastTactileState == HIGH && (now - lastTactileCheck > 150)) {
+    lastTactileCheck = now;
     soundShortChirp();
 
     if (alarmTriggered) {
-      // Tap switch DISMISSES / SNOOZES the active alarm!
+      // Tactile button DISMISSES / SNOOZES the active alarm!
       alarmTriggered = false;
       digitalWrite(BUZZER_PIN, LOW);
-      Serial.println("[TAP] Alarm snoozed/dismissed via Tap Switch!");
+      Serial.println("[TACTILE_BTN] Alarm dismissed/snoozed!");
       displayNeedsUpdate = true;
     } else if (currentScreen == SCREEN_FOCUS_TIMER) {
-      // Tap switch PAUSES / RESUMES the Pomodoro timer!
+      // Tactile button PAUSES / RESUMES the Pomodoro timer!
       timerRunning = !timerRunning;
       if (timerRunning && rtcFound) {
         timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
       }
-      Serial.printf("[TAP] Focus Timer Paused/Resumed -> Running: %d\n", timerRunning);
+      Serial.printf("[TACTILE_BTN] Focus Timer -> Running: %d\n", timerRunning);
       displayNeedsUpdate = true;
     } else {
-      // Tap switch quick action feedback
+      // Quick tactile feedback
       ledState = !ledState;
       digitalWrite(ONBOARD_LED_PIN, ledState ? LOW : HIGH);
-      Serial.println("[TAP] Tap registered!");
+      Serial.println("[TACTILE_BTN] Button pressed!");
+      displayNeedsUpdate = true;
     }
   }
-  lastTapState = currentTapState;
+  lastTactileState = currentTactileState;
 
   // -------------------------------------------------------------
   // 3. Universal Quadrature Rotary Encoder Decoder
