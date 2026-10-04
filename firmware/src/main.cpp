@@ -1,15 +1,15 @@
-#include <Arduino.h>
-#include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <Arduino.h>
+#include <Wire.h>
 #include <math.h>
 
 // ==========================================
 // PIN DEFINITIONS FOR ESP32-C3 SUPERMINI
 // ==========================================
-constexpr int I2C_SDA_PIN = 4;
-constexpr int I2C_SCL_PIN = 5;
-constexpr int ONBOARD_LED_PIN = 8; // SuperMini onboard blue LED (Active LOW)
+constexpr int I2C_SDA_PIN = 21;
+constexpr int I2C_SCL_PIN = 22;
+constexpr int ONBOARD_LED_PIN = 2; // SuperMini onboard blue LED (Active LOW)
 
 constexpr int SCREEN_WIDTH = 128;
 constexpr int SCREEN_HEIGHT = 64;
@@ -59,12 +59,16 @@ void setup() {
     Serial.println("Check: SDA->GPIO 4, SCL->GPIO 5, VCC->3.3V, GND->GND");
     while (true) {
       // Rapid SOS blink on failure
-      digitalWrite(ONBOARD_LED_PIN, LOW);  delay(100);
-      digitalWrite(ONBOARD_LED_PIN, HIGH); delay(100);
+      digitalWrite(ONBOARD_LED_PIN, LOW);
+      delay(100);
+      digitalWrite(ONBOARD_LED_PIN, HIGH);
+      delay(100);
     }
   }
 
-  Serial.printf("[SUCCESS] SSD1306 OLED online at 0x%02X! Starting animation...\n", oledAddress);
+  Serial.printf(
+      "[SUCCESS] SSD1306 OLED online at 0x%02X! Starting animation...\n",
+      oledAddress);
 
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
@@ -168,9 +172,11 @@ void loop() {
   if (now - lastSerialLog >= 1000) {
     lastSerialLog = now;
     ledState = !ledState;
-    digitalWrite(ONBOARD_LED_PIN, ledState ? LOW : HIGH); // Active-low heartbeat
+    digitalWrite(ONBOARD_LED_PIN,
+                 ledState ? LOW : HIGH); // Active-low heartbeat
 
-    Serial.printf("[OLED Alive] Uptime: %lus | Frames: %lu | Angle: %d deg | Addr: 0x%02X\n",
+    Serial.printf("[OLED Alive] Uptime: %lus | Frames: %lu | Angle: %d deg | "
+                  "Addr: 0x%02X\n",
                   now / 1000, frameCount, (int)angleDeg, oledAddress);
   }
 

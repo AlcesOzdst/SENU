@@ -16,3 +16,7 @@ compile_commands.json
 # OS/editor
 .DS_Store
 .idea/
+
+# Private Reference Documents & Notes
+docs/LOGBOOK.md
+*.pdf
