@@ -65,42 +65,147 @@ bool alarmEnabled = true;
 bool alarmTriggered = false;
 unsigned long alarmTriggerStartTime = 0;
 
-// ==========================================
-// BIZARRE BUZZER & ALARM CADENCE (Non-Blocking)
-// ==========================================
-void triggerAlarmBeep(unsigned long now) {
-  if (alarmTriggered) {
-    // BIZARRE ALARM CADENCE: 1.2-second repeating cycle
-    // Chaotic sci-fi alien machine-gun stutter + syncopated wild triplets
-    unsigned long phase = now % 1200;
-    bool beep = false;
+// Alarm Field Selection (Toggled via Tactile Button)
+enum AlarmEditField {
+  EDIT_HOURS,
+  EDIT_MINUTES
+};
+AlarmEditField currentAlarmField = EDIT_HOURS;
 
-    if (phase < 200) {
-      // 1. Rapid laser stutter (5 ultra-fast 20ms machine-gun chirps)
-      beep = ((phase / 20) % 2) == 0;
-    } else if (phase >= 250 && phase < 450) {
-      // 2. Syncopated wild triplet: long-short-long
-      beep = (phase < 330) || (phase >= 360 && phase < 390) || (phase >= 415);
-    } else if (phase >= 500 && phase < 650) {
-      // 3. Frantic heartbeat double-thump
-      beep = (phase < 560) || (phase >= 590 && phase < 640);
-    } else if (phase >= 720 && phase < 840) {
-      // 4. Glitch micro-burst (12ms pulses)
-      beep = ((phase / 12) % 2) == 0;
+// Snooze Management
+bool snoozeActive = false;
+uint32_t snoozeUntilEpoch = 0;
+
+// ==========================================
+// HARRY POTTER / HEDWIG'S THEME (Melody Engine)
+// ==========================================
+#define NOTE_AS4  466
+#define NOTE_B4   494
+#define NOTE_C5   523
+#define NOTE_CS5  554
+#define NOTE_D5   587
+#define NOTE_DS5  622
+#define NOTE_E5   659
+#define NOTE_F5   698
+#define NOTE_FS5  740
+#define NOTE_G5   784
+#define NOTE_GS5  831
+#define NOTE_A5   880
+#define NOTE_AS5  932
+#define NOTE_B5   988
+#define NOTE_C6  1047
+#define NOTE_CS6 1109
+#define NOTE_D6  1175
+#define NOTE_DS6 1245
+#define NOTE_E6  1319
+#define REST        0
+
+struct NoteStep {
+  uint16_t freq;
+  uint16_t duration;
+  uint16_t pause;
+};
+
+// Iconic Hedwig's Theme (Harry Potter main motif)
+const NoteStep hedwigTheme[] = {
+  // Opening motif
+  {NOTE_B4,  350,  60},
+  {NOTE_E5,  520,  60},
+  {NOTE_G5,  200,  60},
+  {NOTE_FS5, 350,  60},
+  {NOTE_E5,  700,  60},
+  {NOTE_B5,  350,  60},
+  {NOTE_A5,  850, 100},
+  {NOTE_FS5, 850, 100},
+
+  // Second phrase
+  {NOTE_E5,  520,  60},
+  {NOTE_G5,  200,  60},
+  {NOTE_FS5, 350,  60},
+  {NOTE_DS5, 700,  60},
+  {NOTE_F5,  350,  60},
+  {NOTE_B4, 1000, 150},
+
+  // Third phrase
+  {NOTE_B4,  350,  60},
+  {NOTE_E5,  520,  60},
+  {NOTE_G5,  200,  60},
+  {NOTE_FS5, 350,  60},
+  {NOTE_E5,  700,  60},
+  {NOTE_B5,  350,  60},
+  {NOTE_D6,  700,  60},
+  {NOTE_CS6, 350,  60},
+  {NOTE_C6,  700,  60},
+  {NOTE_GS5, 350,  60},
+
+  // Fourth phrase (cadence)
+  {NOTE_C6,  520,  60},
+  {NOTE_B5,  200,  60},
+  {NOTE_AS5, 350,  60},
+  {NOTE_AS4, 700,  60},
+  {NOTE_G5,  350,  60},
+  {NOTE_E5, 1100, 400}
+};
+constexpr int HEDWIG_MELODY_LEN = sizeof(hedwigTheme) / sizeof(hedwigTheme[0]);
+
+int melodyNoteIndex = 0;
+unsigned long melodyNoteStartTime = 0;
+bool melodySounding = false;
+
+void updateMelodyPlayer(unsigned long now) {
+  if (!alarmTriggered) {
+    if (melodySounding) {
+      noTone(BUZZER_PIN);
+      digitalWrite(ONBOARD_LED_PIN, HIGH);
+      melodySounding = false;
     }
-    // 840ms to 1200ms: Tense quiet pause before restarting
+    melodyNoteIndex = 0;
+    melodyNoteStartTime = 0;
+    return;
+  }
 
-    digitalWrite(BUZZER_PIN, beep ? HIGH : LOW);
-    digitalWrite(ONBOARD_LED_PIN, beep ? LOW : HIGH); // Synchronized frantic LED
-  } else {
-    digitalWrite(BUZZER_PIN, LOW);
+  // Start initial note
+  if (melodyNoteStartTime == 0) {
+    melodyNoteStartTime = now;
+    melodySounding = true;
+    if (hedwigTheme[melodyNoteIndex].freq > 0) {
+      tone(BUZZER_PIN, hedwigTheme[melodyNoteIndex].freq);
+      digitalWrite(ONBOARD_LED_PIN, LOW); // Flash LED with note
+    } else {
+      noTone(BUZZER_PIN);
+      digitalWrite(ONBOARD_LED_PIN, HIGH);
+    }
+    return;
+  }
+
+  unsigned long elapsed = now - melodyNoteStartTime;
+  uint16_t dur = hedwigTheme[melodyNoteIndex].duration;
+  uint16_t pause = hedwigTheme[melodyNoteIndex].pause;
+
+  // Finished note, enter inter-note pause
+  if (melodySounding && elapsed >= dur) {
+    noTone(BUZZER_PIN);
+    digitalWrite(ONBOARD_LED_PIN, HIGH);
+    melodySounding = false;
+  }
+
+  // Finished note + pause, advance to next note in melody
+  if (elapsed >= (dur + pause)) {
+    melodyNoteIndex = (melodyNoteIndex + 1) % HEDWIG_MELODY_LEN;
+    melodyNoteStartTime = now;
+    melodySounding = true;
+    if (hedwigTheme[melodyNoteIndex].freq > 0) {
+      tone(BUZZER_PIN, hedwigTheme[melodyNoteIndex].freq);
+      digitalWrite(ONBOARD_LED_PIN, LOW);
+    } else {
+      noTone(BUZZER_PIN);
+      digitalWrite(ONBOARD_LED_PIN, HIGH);
+    }
   }
 }
 
 void soundShortChirp() {
-  digitalWrite(BUZZER_PIN, HIGH);
-  delay(12);
-  digitalWrite(BUZZER_PIN, LOW);
+  tone(BUZZER_PIN, 1800, 20);
 }
 
 void setup() {
@@ -122,6 +227,7 @@ void setup() {
   Serial.println("\n[BOOT] SENU ESP32-C3 Starting (experiments branch)...");
   Serial.printf("[ALARM] Initialized for %02d:%02d\n", alarmHour, alarmMinute);
   Serial.println("[PINS] Buzzer -> GPIO 6 | Tactile Push Button -> GPIO 7");
+  Serial.printf("[PINS] GPIO 7 level at boot: %d (1 = Open/HIGH, 0 = Pressed/LOW)\n", digitalRead(PAUSE_BTN_PIN));
 
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   Wire.setClock(100000);
@@ -249,25 +355,42 @@ void renderAlarmScreen() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(4, 24);
-  display.printf("ALARM: %02d:%02d", alarmHour, alarmMinute);
+  if (alarmTriggered) {
+    display.print("ALARM: HEDWIG THEME!");
+  } else if (snoozeActive) {
+    display.print("ALARM (SNOOZED)");
+  } else {
+    display.print("ALARM SETUP");
+  }
   display.drawLine(2, 33, 125, 33, SSD1306_WHITE);
 
   if (alarmTriggered) {
-    // Flashing Alert Header
-    display.fillRect(4, 36, 120, 14, SSD1306_WHITE);
+    // Alert Header
+    display.fillRect(4, 35, 120, 14, SSD1306_WHITE);
     display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
-    display.setCursor(14, 39);
-    display.print("! WAKE UP !");
+    display.setCursor(8, 38);
+    display.print(">> HARRY POTTER <<");
 
     display.setTextColor(SSD1306_WHITE);
-    display.setCursor(6, 53);
-    display.print("[Push Btn: Snooze]");
+    display.setCursor(4, 52);
+    display.print("Tap:Off  Hold:Snooze");
   } else {
-    display.setCursor(6, 37);
-    display.printf("Status: %s", alarmEnabled ? "ENABLED (ON)" : "DISABLED (OFF)");
+    // Big digits showing [HH]:MM or HH:[MM]
+    display.setTextSize(2);
+    display.setCursor(18, 36);
+    if (currentAlarmField == EDIT_HOURS) {
+      display.printf("[%02d]:%02d", alarmHour, alarmMinute);
+    } else {
+      display.printf("%02d:[%02d]", alarmHour, alarmMinute);
+    }
 
-    display.setCursor(6, 52);
-    display.print("[Dial:Min Btn:Test]");
+    display.setTextSize(1);
+    display.setCursor(4, 53);
+    if (currentAlarmField == EDIT_HOURS) {
+      display.printf("%s Tac:Min Knob:Hr", alarmEnabled ? "ON" : "--");
+    } else {
+      display.printf("%s Tac:Hr  Knob:Min", alarmEnabled ? "ON" : "--");
+    }
   }
 }
 
@@ -330,9 +453,9 @@ void loop() {
   unsigned long now = millis();
 
   // -------------------------------------------------------------
-  // 0. Update Bizarre Alarm Buzzer Audio & Flashing LED
+  // 0. Update Harry Potter Theme Buzzer Melody & Flashing LED
   // -------------------------------------------------------------
-  triggerAlarmBeep(now);
+  updateMelodyPlayer(now);
 
   // -------------------------------------------------------------
   // 1. Check Real-Time Clock Alarm (Matches exact minute)
@@ -346,16 +469,18 @@ void loop() {
     if (alarmEnabled && !alarmTriggered) {
       if (currentTime.hour() == alarmHour && currentTime.minute() == alarmMinute && currentTime.second() == 0) {
         alarmTriggered = true;
+        snoozeActive = false;
         alarmTriggerStartTime = now;
         currentScreen = SCREEN_ALARM;
         displayNeedsUpdate = true;
-        Serial.printf("[ALARM] >>> BIZARRE ALARM TRIGGERED at %02d:%02d! <<<\n", alarmHour, alarmMinute);
+        Serial.printf("[ALARM] >>> HARRY POTTER THEME ALARM TRIGGERED at %02d:%02d! <<<\n", alarmHour, alarmMinute);
       }
     }
 
     // Auto-silence after 3 minutes if untouched
     if (alarmTriggered && (now - alarmTriggerStartTime > 180000)) {
       alarmTriggered = false;
+      noTone(BUZZER_PIN);
       displayNeedsUpdate = true;
     }
   }
@@ -373,7 +498,7 @@ void loop() {
         alarmTriggerStartTime = now;
         currentScreen = SCREEN_FOCUS_TIMER; // Switch to timer screen when complete
         displayNeedsUpdate = true;
-        Serial.println("[POMO] Session COMPLETE! Bizarre alarm triggered!");
+        Serial.println("[POMO] Session COMPLETE! Harry Potter Theme triggered!");
       } else {
         if (timerRemainingSeconds != (uint32_t)diff) {
           timerRemainingSeconds = diff;
@@ -395,7 +520,7 @@ void loop() {
           alarmTriggerStartTime = now;
           currentScreen = SCREEN_FOCUS_TIMER;
           displayNeedsUpdate = true;
-          Serial.println("[POMO] Session COMPLETE! Bizarre alarm triggered!");
+          Serial.println("[POMO] Session COMPLETE! Harry Potter Theme triggered!");
         } else if (currentScreen == SCREEN_FOCUS_TIMER) {
           displayNeedsUpdate = true;
         }
@@ -404,47 +529,118 @@ void loop() {
   }
 
   // -------------------------------------------------------------
-  // 2. Dedicated Tactile Push Button (GPIO 7) - Pause / Snooze / Test
+  // 1c. Check Snooze Expiration (+5 Minutes)
   // -------------------------------------------------------------
-  int currentTactileState = digitalRead(PAUSE_BTN_PIN);
-  if (currentTactileState == LOW && lastTactileState == HIGH && (now - lastTactileCheck > 150)) {
-    lastTactileCheck = now;
-    soundShortChirp();
-
-    if (alarmTriggered) {
-      // Tactile button DISMISSES / SNOOZES the active alarm!
-      alarmTriggered = false;
-      digitalWrite(BUZZER_PIN, LOW);
-      Serial.println("[TACTILE_BTN] Alarm dismissed/snoozed!");
-      displayNeedsUpdate = true;
-    } else if (currentScreen == SCREEN_FOCUS_TIMER) {
-      // Tactile button PAUSES / RESUMES the Pomodoro timer!
-      timerRunning = !timerRunning;
-      if (timerRunning) {
-        if (timerRemainingSeconds == 0) {
-          timerRemainingSeconds = focusMinutes * 60;
-        }
-        if (rtcFound) {
-          timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
-        }
-      }
-      Serial.printf("[TACTILE_BTN] Focus Timer -> Running: %d\n", timerRunning);
-      displayNeedsUpdate = true;
-    } else if (currentScreen == SCREEN_ALARM) {
-      // In Alarm screen: Pressing tactile button test-fires the bizarre alarm!
+  if (snoozeActive && !alarmTriggered) {
+    uint32_t currentEpoch = rtcFound ? rtc.now().unixtime() : (millis() / 1000);
+    if (currentEpoch >= snoozeUntilEpoch) {
+      snoozeActive = false;
       alarmTriggered = true;
       alarmTriggerStartTime = now;
-      Serial.println("[ALARM] Test-firing bizarre buzzer!");
+      currentScreen = SCREEN_ALARM;
       displayNeedsUpdate = true;
-    } else {
-      // Quick tactile feedback
-      ledState = !ledState;
-      digitalWrite(ONBOARD_LED_PIN, ledState ? LOW : HIGH);
-      Serial.println("[TACTILE_BTN] Button pressed!");
-      displayNeedsUpdate = true;
+      Serial.println("[ALARM] >>> SNOOZE EXPIRED! Playing Harry Potter Theme! <<<");
     }
   }
-  lastTactileState = currentTactileState;
+
+  // -------------------------------------------------------------
+  // 2. Dedicated Tactile Push Button (GPIO 7) - Short & Long Press
+  // -------------------------------------------------------------
+  static int tactileStableState = HIGH;
+  static int tactileLastReading = HIGH;
+  static unsigned long tactileLastDebounceTime = 0;
+  static unsigned long tactilePressStartTime = 0;
+  static bool tactileLongPressTriggered = false;
+
+  int reading = digitalRead(PAUSE_BTN_PIN);
+  if (reading != tactileLastReading) {
+    tactileLastDebounceTime = now;
+  }
+
+  if ((now - tactileLastDebounceTime) > 30) {
+    if (reading != tactileStableState) {
+      tactileStableState = reading;
+      Serial.printf("[TAC] GPIO 7 level -> %s\n", (tactileStableState == LOW) ? "PRESSED (LOW)" : "RELEASED (HIGH)");
+
+      if (tactileStableState == LOW) {
+        // Button pressed down
+        tactilePressStartTime = now;
+        tactileLongPressTriggered = false;
+        soundShortChirp();
+      } else {
+        // Button released
+        if (!tactileLongPressTriggered) {
+          // *** SHORT PRESS ACTION ***
+          Serial.println("[TAC] Short Press detected!");
+
+          if (alarmTriggered) {
+            // "just press to switch off the alarm"
+            alarmTriggered = false;
+            snoozeActive = false;
+            noTone(BUZZER_PIN);
+            digitalWrite(ONBOARD_LED_PIN, HIGH);
+            Serial.println("[ALARM] Switched OFF via Tactile Button tap!");
+            displayNeedsUpdate = true;
+          } else if (currentScreen == SCREEN_ALARM) {
+            // "When I press the tacbutton it should toggle between hours and minutes"
+            currentAlarmField = (currentAlarmField == EDIT_HOURS) ? EDIT_MINUTES : EDIT_HOURS;
+            Serial.printf("[ALARM] Toggle field -> Editing %s\n", (currentAlarmField == EDIT_HOURS) ? "HOURS" : "MINUTES");
+            displayNeedsUpdate = true;
+          } else if (currentScreen == SCREEN_FOCUS_TIMER) {
+            // Pause/Resume Pomodoro timer
+            timerRunning = !timerRunning;
+            if (timerRunning) {
+              if (timerRemainingSeconds == 0) {
+                timerRemainingSeconds = focusMinutes * 60;
+              }
+              if (rtcFound) {
+                timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+              }
+            }
+            Serial.printf("[POMO] Focus Timer -> Running: %d\n", timerRunning);
+            displayNeedsUpdate = true;
+          } else {
+            // Feedback in menu
+            ledState = !ledState;
+            digitalWrite(ONBOARD_LED_PIN, ledState ? LOW : HIGH);
+            displayNeedsUpdate = true;
+          }
+        }
+      }
+    }
+  }
+
+  // *** LONG PRESS ACTION (Hold for >= 600ms) ***
+  if (tactileStableState == LOW && !tactileLongPressTriggered) {
+    if (now - tactilePressStartTime >= 600) {
+      tactileLongPressTriggered = true;
+      Serial.println("[TAC] Long Press (Hold) detected!");
+
+      if (alarmTriggered) {
+        // "snooze after pressing and holding the tac button"
+        alarmTriggered = false;
+        snoozeActive = true;
+        snoozeUntilEpoch = (rtcFound ? rtc.now().unixtime() : (millis() / 1000)) + 300; // 5 min snooze
+        noTone(BUZZER_PIN);
+        digitalWrite(ONBOARD_LED_PIN, HIGH);
+        Serial.println("[ALARM] SNOOZED for 5 minutes via Tactile Button hold!");
+        displayNeedsUpdate = true;
+      } else if (currentScreen == SCREEN_ALARM) {
+        // In Alarm screen: Hold tests the Harry Potter melody!
+        alarmTriggered = true;
+        alarmTriggerStartTime = now;
+        Serial.println("[ALARM] Preview test: Playing Harry Potter Theme!");
+        displayNeedsUpdate = true;
+      } else if (currentScreen == SCREEN_FOCUS_TIMER) {
+        // Reset timer
+        timerRunning = false;
+        timerRemainingSeconds = focusMinutes * 60;
+        Serial.println("[POMO] Focus Timer Reset!");
+        displayNeedsUpdate = true;
+      }
+    }
+  }
+  tactileLastReading = reading;
 
   // -------------------------------------------------------------
   // 3. Universal Quadrature Rotary Encoder Decoder
@@ -479,12 +675,14 @@ void loop() {
           Serial.printf("[POMO] Focus set to: %d min\n", focusMinutes);
           displayNeedsUpdate = true;
         } else if (currentScreen == SCREEN_ALARM) {
-          // Dial alarm in 1-minute steps (00:00 to 23:59)
-          int totalAlarmMins = alarmHour * 60 + alarmMinute;
-          totalAlarmMins = (totalAlarmMins + delta + 1440) % 1440;
-          alarmHour = totalAlarmMins / 60;
-          alarmMinute = totalAlarmMins % 60;
-          Serial.printf("[ALARM] Set to %02d:%02d\n", alarmHour, alarmMinute);
+          // Select exact number based on field toggled with Tac Button!
+          if (currentAlarmField == EDIT_HOURS) {
+            alarmHour = (alarmHour + delta + 24) % 24;
+            Serial.printf("[ALARM] Set Hour: %02d\n", alarmHour);
+          } else {
+            alarmMinute = (alarmMinute + delta + 60) % 60;
+            Serial.printf("[ALARM] Set Minute: %02d\n", alarmMinute);
+          }
           displayNeedsUpdate = true;
         }
       }
@@ -522,7 +720,9 @@ void loop() {
     if (alarmTriggered) {
       // Clicking also silences the alarm
       alarmTriggered = false;
-      digitalWrite(BUZZER_PIN, LOW);
+      snoozeActive = false;
+      noTone(BUZZER_PIN);
+      digitalWrite(ONBOARD_LED_PIN, HIGH);
       displayNeedsUpdate = true;
     } else if (currentScreen == SCREEN_MENU) {
       if (selectedMenuIndex == 0)
