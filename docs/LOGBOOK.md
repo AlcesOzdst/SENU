@@ -78,4 +78,22 @@ This logbook serves as the chronological research and development journal for th
   - **Hardware Heartbeat:** ESP32-C3 SuperMini onboard blue LED (GPIO 8) toggles every second alongside serial output at 115200 baud.
 * **Build Verification:** Successfully compiled under PlatformIO Core (`[SUCCESS] Took 5.60 seconds`).
 
+---
+
+### [2026-10-04 18:08:18 +05:30] — Interim OLED Hardware Validation via Standard ESP32
+* **Author:** Antigravity & Parth
+* **Milestone:** M0 — OLED Hardware Bring-up & Diagnostics
+* **Context / Strategy:**
+  - Pivoted to a standard ESP32 (e.g. NodeMCU-32S / ESP32-WROOM-32 Dev Module) for quick bench isolation of the 0.96" SSD1306 OLED display.
+  - Guided Parth on how to configure PlatformIO multi-environment setups without modifying the file directly (teaching mode).
+* **Technical Considerations & Differences Documented:**
+  - **Board Identifier:** Standard ESP32 dev boards use `board = esp32dev` in PlatformIO under `platform = espressif32`.
+  - **I²C Hardware Bus Mapping:**
+    - Standard ESP32 default hardware I²C pins are **GPIO 21 (SDA)** and **GPIO 22 (SCL)**, unlike ESP32-C3's GPIO 4 (SDA) and GPIO 5 (SCL).
+  - **Serial Communication:**
+    - Standard ESP32 utilizes an onboard dedicated USB-UART bridge (CP2102/CH340).
+    - ESP32-C3 specific build flags (`-D ARDUINO_USB_CDC_ON_BOOT=1` and `-D ARDUINO_USB_MODE=1`) must be omitted for the standard ESP32 environment.
+  - **Multi-Environment Workflow:**
+    - PlatformIO supports defining both `[env:esp32-c3-supermini]` and `[env:esp32dev]` side-by-side in `platformio.ini`, toggled seamlessly via `default_envs` or the IDE status bar environment selector.
+
 
