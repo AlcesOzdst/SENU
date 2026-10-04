@@ -104,16 +104,15 @@ void loop() {
     // 1. Boundary box for the active working area (Y = 22 to 63)
     display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT,
                      SSD1306_WHITE);
+    display.setCursor(4, 24);
+    display.print("ESP32-C3 SUPERMINI"); // 18 chars -> Fits cleanly
 
-    // 2. Telemetry and text strictly in the working window
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(4, 34);
+    display.printf("OLED: OK (Addr 0x%02X)",
+                   oledAddress); // 20 chars -> Fits cleanly
 
-    display.setCursor(4, 25);
-    display.print("C3 SUPERMINI : ACTIVE");
-
-    display.setCursor(4, 35);
-    display.printf("OLED 128x42  | Addr 0x%02X", oledAddress);
+    display.setCursor(4, 44);
+    display.printf("Uptime: %lus   #%lu", now / 1000, counter); // Fits cleanly
 
     display.setCursor(4, 45);
     display.printf("Uptime: %lus  #%lu", now / 1000, counter);
