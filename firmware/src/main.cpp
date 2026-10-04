@@ -246,18 +246,11 @@ void setup() {
     rtcFound = true;
     Serial.println("[RTC] DS3231 detected successfully!");
     
-    // Hold encoder knob OR tactile button during boot to force re-sync with PC compile time!
-    bool forceSync = (digitalRead(ENCODER_SW_PIN) == LOW) || (digitalRead(PAUSE_BTN_PIN) == LOW);
-    if (rtc.lostPower() || forceSync) {
-      DateTime compileTime = DateTime(F(__DATE__), F(__TIME__)) + TimeSpan(0, 0, 0, 6);
-      rtc.adjust(compileTime);
-      Serial.printf("[RTC] Synced time to PC build timestamp (+6s): %02d:%02d:%02d\n",
-                    compileTime.hour(), compileTime.minute(), compileTime.second());
-    } else {
-      DateTime cur = rtc.now();
-      Serial.printf("[RTC] Current clock: %02d:%02d:%02d\n", cur.hour(), cur.minute(), cur.second());
-      Serial.println("[RTC] Tip: Type 'SET HH:MM' in Serial Monitor to set time, or hold knob on boot to sync!");
-    }
+    // Automatically sync RTC to your PC's exact time whenever uploaded!
+    DateTime compileTime = DateTime(F(__DATE__), F(__TIME__)) + TimeSpan(0, 0, 0, 5);
+    rtc.adjust(compileTime);
+    Serial.printf("[RTC] Synced RTC to PC clock: %02d:%02d:%02d\n",
+                  compileTime.hour(), compileTime.minute(), compileTime.second());
   } else {
     Serial.println("[RTC] Warning: DS3231 not found on I2C bus (offline fallback).");
   }
