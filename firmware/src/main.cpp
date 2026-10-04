@@ -2,131 +2,254 @@
 #include <Adafruit_SSD1306.h>
 #include <Arduino.h>
 #include <Wire.h>
-#include <math.h>
 
 // ==========================================
 // PIN DEFINITIONS FOR ESP32-C3 SUPERMINI
 // ==========================================
 constexpr int I2C_SDA_PIN = 4;
 constexpr int I2C_SCL_PIN = 5;
-constexpr int ONBOARD_LED_PIN = 8; // SuperMini onboard blue LED (Active LOW)
+constexpr int ONBOARD_LED_PIN = 8; // SuperMini blue LED (Active LOW)
 
+// Rotary Encoder Pins
+constexpr int ENCODER_CLK_PIN = 0; // Quadrature A (Interrupt)
+constexpr int ENCODER_DT_PIN = 1;  // Quadrature B
+constexpr int ENCODER_SW_PIN = 3;  // Push switch (Active LOW)
+
+// Display Calibrated Geometry
 constexpr int SCREEN_WIDTH = 128;
 constexpr int SCREEN_HEIGHT = 64;
-constexpr int OLED_RESET = -1;
+constexpr int SCREEN_Y_OFFSET = 22; // Skip unlit top blocks (Y = 0..21)
+constexpr int USABLE_HEIGHT = 42;   // Active height: 64 - 22 = 42 pixels
 
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 uint8_t oledAddress = 0x3C;
 
-// Center coordinates for 128x64 display
-constexpr int CX = 64;
-constexpr int CY = 32;
+// ==========================================
+// ENCODER & NAVIGATION STATE
+// ==========================================
+volatile int encoderDelta = 0;
+int lastClkState = HIGH;
 
-// Arm length for rotating indicator
-constexpr float ROT_RADIUS = 24.0f;
-constexpr float ORBIT_RADIUS = 20.0f;
-constexpr int SCREEN_Y_OFFSET = 22; // Skip unlit blocks R1-R3 (Y = 0..21)
-constexpr int USABLE_HEIGHT = 42;   // Working height: 64 - 22 = 42 pixels
+void IRAM_ATTR handleEncoderISR() {
+  static unsigned long lastInterruptTime = 0;
+  unsigned long now = millis();
+  if (now - lastInterruptTime > 4) { // 4ms debounce
+    int currentClk = digitalRead(ENCODER_CLK_PIN);
+    int currentDt = digitalRead(ENCODER_DT_PIN);
+    if (currentClk != lastClkState && currentClk == LOW) {
+      if (currentDt != currentClk) {
+        encoderDelta++;
+      } else {
+        encoderDelta--;
+      }
+    }
+    lastClkState = currentClk;
+    lastInterruptTime = now;
+  }
+}
+
+// App Screens
+enum ScreenState {
+  SCREEN_MENU,
+  SCREEN_FOCUS_TIMER,
+  SCREEN_PC_METRICS,
+  SCREEN_TASKS
+};
+
+ScreenState currentScreen = SCREEN_MENU;
+
+// Menu items
+const char *menuItems[] = {"1. Focus Timer", "2. PC Metrics", "3. Tasks (Sync)",
+                           "4. Device Info"};
+constexpr int TOTAL_MENU_ITEMS = sizeof(menuItems) / sizeof(menuItems[0]);
+int selectedMenuIndex = 0;
 
 void setup() {
   pinMode(ONBOARD_LED_PIN, OUTPUT);
-  digitalWrite(ONBOARD_LED_PIN, HIGH); // LED OFF initially
+  digitalWrite(ONBOARD_LED_PIN, HIGH);
+
+  // Setup Rotary Encoder Pins
+  pinMode(ENCODER_CLK_PIN, INPUT_PULLUP);
+  pinMode(ENCODER_DT_PIN, INPUT_PULLUP);
+  pinMode(ENCODER_SW_PIN, INPUT_PULLUP);
+  lastClkState = digitalRead(ENCODER_CLK_PIN);
+  attachInterrupt(digitalPinToInterrupt(ENCODER_CLK_PIN), handleEncoderISR,
+                  CHANGE);
 
   Serial.begin(115200);
   delay(1000);
 
-  Serial.println("\n==========================================");
-  Serial.println("   SENU: 0.96\" OLED Visual Motion Test    ");
-  Serial.println("   Static Cross + Rotating Element Test   ");
-  Serial.println("==========================================");
-
-  // Initialize I2C bus explicitly
-  // Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-  // Wire.setClock(400000); // 400kHz Fast Mode for smooth 30 FPS animation
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-  Wire.setClock(100000); // 100kHz standard mode
+  Wire.setClock(100000);
 
-  // Try standard SSD1306 address 0x3C, fallback to 0x3D
   bool displayReady = display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
-  if (displayReady) {
-    oledAddress = 0x3C;
-  } else {
-    displayReady = display.begin(SSD1306_SWITCHCAPVCC, 0x3D);
-    if (displayReady) {
-      oledAddress = 0x3D;
-    }
-  }
-
   if (!displayReady) {
-    Serial.println("[FATAL] SSD1306 OLED not found at 0x3C or 0x3D!");
-    Serial.println("Check: SDA->GPIO 4, SCL->GPIO 5, VCC->3.3V, GND->GND");
-    while (true) {
-      // Rapid SOS blink on failure
-      digitalWrite(ONBOARD_LED_PIN, LOW);
-      delay(100);
-      digitalWrite(ONBOARD_LED_PIN, HIGH);
-      delay(100);
-    }
+    display.begin(SSD1306_SWITCHCAPVCC, 0x3D);
   }
-
-  Serial.printf(
-      "[SUCCESS] SSD1306 OLED online at 0x%02X! Starting animation...\n",
-      oledAddress);
 
   display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-  display.setTextSize(1);
-  display.setCursor(18, 20);
-  display.println("OLED DETECTED!");
-  display.setCursor(18, 36);
-  display.printf("Address: 0x%02X", oledAddress);
   display.display();
-  delay(1500);
 }
+
+void renderMenu() {
+  display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT,
+                   SSD1306_WHITE);
+
+  // Header Title at Y = 24
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(4, 24);
+  display.print("SENU: MAIN MENU");
+  display.drawLine(2, 33, 125, 33, SSD1306_WHITE);
+
+  // Calculate visible slice (show 2 items at a time inside the 42px window)
+  int startIndex = (selectedMenuIndex >= 2) ? selectedMenuIndex - 1 : 0;
+  if (startIndex > TOTAL_MENU_ITEMS - 2)
+    startIndex = TOTAL_MENU_ITEMS - 2;
+
+  for (int i = 0; i < 2; ++i) {
+    int itemIdx = startIndex + i;
+    int yPos = 36 + (i * 12);
+
+    if (itemIdx == selectedMenuIndex) {
+      // Inverted highlight bar for selected item
+      display.fillRect(2, yPos - 1, 124, 11, SSD1306_WHITE);
+      display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+      display.setCursor(6, yPos + 1);
+      display.printf("> %s", menuItems[itemIdx]);
+    } else {
+      display.setTextColor(SSD1306_WHITE);
+      display.setCursor(6, yPos + 1);
+      display.printf("  %s", menuItems[itemIdx]);
+    }
+  }
+
+  // Scroll indicator bar on the right edge
+  int scrollY = 36 + (selectedMenuIndex * 6);
+  display.fillRect(123, scrollY, 2, 6, SSD1306_WHITE);
+}
+
+void renderFocusTimer() {
+  display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT,
+                   SSD1306_WHITE);
+
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(4, 24);
+  display.print("FOCUS SESSION (POMO)");
+  display.drawLine(2, 33, 125, 33, SSD1306_WHITE);
+
+  // Large timer readout
+  display.setTextSize(2);
+  display.setCursor(34, 37);
+  display.print("25:00");
+
+  display.setTextSize(1);
+  display.setCursor(14, 54);
+  display.print("[Click to Return]");
+}
+
+void renderPCMetrics() {
+  display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT,
+                   SSD1306_WHITE);
+
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(4, 24);
+  display.print("HOST PC METRICS");
+  display.drawLine(2, 33, 125, 33, SSD1306_WHITE);
+
+  display.setCursor(6, 36);
+  display.print("CPU:  18% [|||       ]");
+
+  display.setCursor(6, 46);
+  display.print("RAM:  42% [|||||     ]");
+
+  display.setCursor(6, 55);
+  display.print("[Click to Return]");
+}
+
+void renderTasks() {
+  display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT,
+                   SSD1306_WHITE);
+
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(4, 24);
+  display.print("UPCOMING TASKS");
+  display.drawLine(2, 33, 125, 33, SSD1306_WHITE);
+
+  display.setCursor(6, 37);
+  display.print("* Submit Report (2h)");
+
+  display.setCursor(6, 48);
+  display.print("* PCB Review (Tomorrow)");
+}
+
 void loop() {
-  static unsigned long lastUpdate = 0;
-  static uint32_t counter = 0;
+  static unsigned long lastButtonCheck = 0;
+  static int lastButtonState = HIGH;
   static bool ledState = false;
 
   unsigned long now = millis();
 
-  if (now - lastUpdate >= 1000) {
-    lastUpdate = now;
-    counter++;
+  // 1. Process Rotary Encoder Rotation
+  if (encoderDelta != 0) {
+    noInterrupts();
+    int delta = encoderDelta;
+    encoderDelta = 0;
+    interrupts();
 
-    // Toggle onboard LED heartbeat (Active LOW on SuperMini)
+    if (currentScreen == SCREEN_MENU) {
+      selectedMenuIndex = (selectedMenuIndex + delta) % TOTAL_MENU_ITEMS;
+      if (selectedMenuIndex < 0)
+        selectedMenuIndex += TOTAL_MENU_ITEMS;
+    }
+  }
+
+  // 2. Process Encoder Pushbutton (SW)
+  int currentButtonState = digitalRead(ENCODER_SW_PIN);
+  if (currentButtonState == LOW && lastButtonState == HIGH &&
+      (now - lastButtonCheck > 250)) {
+    lastButtonCheck = now;
+
+    // Toggle onboard LED on click
     ledState = !ledState;
     digitalWrite(ONBOARD_LED_PIN, ledState ? LOW : HIGH);
 
-    display.clearDisplay();
+    if (currentScreen == SCREEN_MENU) {
+      if (selectedMenuIndex == 0)
+        currentScreen = SCREEN_FOCUS_TIMER;
+      else if (selectedMenuIndex == 1)
+        currentScreen = SCREEN_PC_METRICS;
+      else if (selectedMenuIndex == 2)
+        currentScreen = SCREEN_TASKS;
+      else
+        currentScreen = SCREEN_MENU;
+    } else {
+      currentScreen = SCREEN_MENU; // Any sub-screen click returns to menu
+    }
+  }
+  lastButtonState = currentButtonState;
 
-    // 1. Boundary box for the active working area (Y = 22 to 63)
-    display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT,
-                     SSD1306_WHITE);
-    display.setCursor(4, 24);
-    display.print("ESP32-C3 SUPERMINI"); // 18 chars -> Fits cleanly
+  // 3. Render Active Screen
+  display.clearDisplay();
 
-    display.setCursor(4, 34);
-    display.printf("OLED: OK (Addr 0x%02X)",
-                   oledAddress); // 20 chars -> Fits cleanly
-
-    display.setCursor(4, 44);
-    display.printf("Uptime: %lus   #%lu", now / 1000, counter); // Fits cleanly
-
-    display.setCursor(4, 45);
-    display.printf("Uptime: %lus  #%lu", now / 1000, counter);
-
-    // Dynamic animated progress bar at bottom of the active area
-    int barWidth = (counter % 20) * 6;
-    display.drawRect(4, 55, 120, 6, SSD1306_WHITE);
-    display.fillRect(6, 57, barWidth, 2, SSD1306_WHITE);
-
-    display.display();
-
-    Serial.printf("[C3 Alive] Uptime: %lus | Frames: %lu | OLED: 0x%02X\n",
-                  now / 1000, counter, oledAddress);
+  switch (currentScreen) {
+  case SCREEN_MENU:
+    renderMenu();
+    break;
+  case SCREEN_FOCUS_TIMER:
+    renderFocusTimer();
+    break;
+  case SCREEN_PC_METRICS:
+    renderPCMetrics();
+    break;
+  case SCREEN_TASKS:
+    renderTasks();
+    break;
   }
 
-  delay(20);
+  display.display();
+  delay(15);
 }
