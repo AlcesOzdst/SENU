@@ -16,6 +16,10 @@ constexpr int ENCODER_CLK_PIN = 0; // Quadrature A
 constexpr int ENCODER_DT_PIN = 1;  // Quadrature B
 constexpr int ENCODER_SW_PIN = 3;  // Push switch (Active LOW)
 
+// Experimental Hardware Pins (Branch: experiments)
+constexpr int BUZZER_PIN = 6;      // Piezo/Active Buzzer Output
+constexpr int TAP_SWITCH_PIN = 7;  // Tap / Slap Switch (Active LOW, internal pull-up)
+
 // Display Calibrated Geometry
 constexpr int SCREEN_WIDTH = 128;
 constexpr int SCREEN_HEIGHT = 64;
@@ -32,34 +36,74 @@ bool rtcFound = false;
 enum ScreenState {
   SCREEN_MENU,
   SCREEN_FOCUS_TIMER,
+  SCREEN_ALARM,
   SCREEN_PC_METRICS,
   SCREEN_TASKS
 };
 
 ScreenState currentScreen = SCREEN_MENU;
 
-const char *menuItems[] = {"1. Focus Timer", "2. PC Metrics", "3. Tasks (Sync)",
-                           "4. Device Info"};
+const char *menuItems[] = {
+  "1. Focus Timer",
+  "2. Alarm (06:00)",
+  "3. PC Metrics",
+  "4. Tasks (Sync)"
+};
 constexpr int TOTAL_MENU_ITEMS = sizeof(menuItems) / sizeof(menuItems[0]);
 int selectedMenuIndex = 0;
 
+// Focus Timer State
 bool timerRunning = false;
 int focusMinutes = 25;
 uint32_t timerEndEpoch = 0;
 uint32_t timerRemainingSeconds = 25 * 60;
 
+// Alarm State (Experimental: 06:00 AM Alarm)
+int alarmHour = 6;
+int alarmMinute = 0;
+bool alarmEnabled = true;
+bool alarmTriggered = false;
+unsigned long alarmTriggerStartTime = 0;
+
+// ==========================================
+// BUZZER & ALARM CADENCE (Non-Blocking)
+// ==========================================
+void triggerAlarmBeep(unsigned long now) {
+  if (alarmTriggered) {
+    // 3 rhythmic pulses every 1000ms: beep-beep-beep ... pause
+    unsigned long phase = now % 1000;
+    bool beep = (phase < 100) || (phase >= 160 && phase < 260) || (phase >= 320 && phase < 420);
+    digitalWrite(BUZZER_PIN, beep ? HIGH : LOW);
+    digitalWrite(ONBOARD_LED_PIN, beep ? LOW : HIGH); // Synchronized LED flash
+  } else {
+    digitalWrite(BUZZER_PIN, LOW);
+  }
+}
+
+void soundShortChirp() {
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(15);
+  digitalWrite(BUZZER_PIN, LOW);
+}
+
 void setup() {
   pinMode(ONBOARD_LED_PIN, OUTPUT);
   digitalWrite(ONBOARD_LED_PIN, HIGH);
 
-  // Setup Rotary Encoder Pins with Internal Pull-Ups
+  // Setup Rotary Encoder Pins
   pinMode(ENCODER_CLK_PIN, INPUT_PULLUP);
   pinMode(ENCODER_DT_PIN, INPUT_PULLUP);
   pinMode(ENCODER_SW_PIN, INPUT_PULLUP);
 
+  // Setup Experimental Hardware Pins
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+  pinMode(TAP_SWITCH_PIN, INPUT_PULLUP);
+
   Serial.begin(115200);
   delay(500);
-  Serial.println("\n[BOOT] SENU ESP32-C3 Starting...");
+  Serial.println("\n[BOOT] SENU ESP32-C3 Starting (experiments branch)...");
+  Serial.printf("[ALARM] Scheduled for %02d:%02d AM\n", alarmHour, alarmMinute);
 
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   Wire.setClock(100000);
@@ -81,16 +125,17 @@ void setup() {
       rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
     }
   } else {
-    Serial.println(
-        "[RTC] Warning: DS3231 not found on I2C bus (offline mode).");
+    Serial.println("[RTC] Warning: DS3231 not found on I2C bus (offline fallback).");
   }
+
+  // Startup audio chirp
+  soundShortChirp();
 }
 
 void renderMenu() {
-  display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT,
-                   SSD1306_WHITE);
+  display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT, SSD1306_WHITE);
 
-  // Header Title at Y = 24 with Live Real-World Time & Pin Telemetry
+  // Header Title at Y = 24 with Live Real-World Time & Alarm Bell Icon
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(4, 24);
@@ -104,8 +149,7 @@ void renderMenu() {
   }
 
   if (rtcFound) {
-    display.printf("%02d:%02d:%02d", cachedNow.hour(), cachedNow.minute(),
-                   cachedNow.second());
+    display.printf("%02d:%02d:%02d", cachedNow.hour(), cachedNow.minute(), cachedNow.second());
   } else {
     display.print("SENU MENU");
   }
@@ -128,7 +172,6 @@ void renderMenu() {
     int yPos = 36 + (i * 12);
 
     if (itemIdx == selectedMenuIndex) {
-      // Inverted highlight bar for selected item
       display.fillRect(2, yPos - 1, 124, 11, SSD1306_WHITE);
       display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
       display.setCursor(6, yPos + 1);
@@ -146,8 +189,7 @@ void renderMenu() {
 }
 
 void renderFocusTimer() {
-  display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT,
-                   SSD1306_WHITE);
+  display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT, SSD1306_WHITE);
 
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
@@ -161,6 +203,7 @@ void renderFocusTimer() {
     if (diff <= 0) {
       timerRemainingSeconds = 0;
       timerRunning = false; // Session finished!
+      alarmTriggered = true; // Sound buzzer on session complete
     } else {
       timerRemainingSeconds = diff;
     }
@@ -169,20 +212,45 @@ void renderFocusTimer() {
   int mins = timerRemainingSeconds / 60;
   int secs = timerRemainingSeconds % 60;
 
-  // Large timer readout
   display.setTextSize(2);
   display.setCursor(34, 36);
   display.printf("%02d:%02d", mins, secs);
 
   display.setTextSize(1);
   display.setCursor(6, 53);
-  display.print(timerRunning ? "[Click:Pause Hld:Back]"
-                             : "[Click:Start Hld:Back]");
+  display.print("[Tap:Pause Click:Start]");
+}
+
+void renderAlarmScreen() {
+  display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT, SSD1306_WHITE);
+
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(4, 24);
+  display.printf("ALARM: %02d:%02d AM", alarmHour, alarmMinute);
+  display.drawLine(2, 33, 125, 33, SSD1306_WHITE);
+
+  if (alarmTriggered) {
+    // Flashing Alert Header
+    display.fillRect(4, 36, 120, 14, SSD1306_WHITE);
+    display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+    display.setCursor(14, 39);
+    display.print("! WAKE UP !");
+
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(6, 53);
+    display.print("[Tap Switch: Snooze]");
+  } else {
+    display.setCursor(6, 37);
+    display.printf("Status: %s", alarmEnabled ? "ENABLED (ON)" : "DISABLED (OFF)");
+
+    display.setCursor(6, 52);
+    display.print("[Knob:Turn Click:Toggle]");
+  }
 }
 
 void renderPCMetrics() {
-  display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT,
-                   SSD1306_WHITE);
+  display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT, SSD1306_WHITE);
 
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
@@ -201,8 +269,7 @@ void renderPCMetrics() {
 }
 
 void renderTasks() {
-  display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT,
-                   SSD1306_WHITE);
+  display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT, SSD1306_WHITE);
 
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
@@ -220,26 +287,92 @@ void renderTasks() {
 void loop() {
   static unsigned long buttonPressStart = 0;
   static unsigned long lastButtonCheck = 0;
+  static unsigned long lastTapCheck = 0;
   static unsigned long lastClockTick = 0;
+  static int lastTapState = HIGH;
   static bool buttonWasPressed = false;
   static int lastButtonState = HIGH;
   static bool ledState = false;
   static bool displayNeedsUpdate = true;
 
   // 16-State Quadrature Transition Table
-  // State: [Old_CLK, Old_DT, New_CLK, New_DT]
-  static const int8_t qeTable[16] = {0,  -1, 1, 0, 1, 0, 0,  -1,
-                                     -1, 0,  0, 1, 0, 1, -1, 0};
+  static const int8_t qeTable[16] = {
+      0,  -1,  1,  0,
+      1,   0,  0, -1,
+     -1,   0,  0,  1,
+      0,   1, -1,  0
+  };
   static uint8_t encoderHistory = 0;
   static int8_t accumulatedSteps = 0;
 
   unsigned long now = millis();
 
   // -------------------------------------------------------------
-  // 1. Universal Quadrature Decoder (Full & Half Cycle Immune)
+  // 0. Update Alarm Buzzer Audio & Flashing LED
   // -------------------------------------------------------------
-  uint8_t currentPins =
-      (digitalRead(ENCODER_CLK_PIN) << 1) | digitalRead(ENCODER_DT_PIN);
+  triggerAlarmBeep(now);
+
+  // -------------------------------------------------------------
+  // 1. Check Real-Time Clock Alarm (Tomorrow at 6:00:00 AM)
+  // -------------------------------------------------------------
+  static unsigned long lastAlarmCheck = 0;
+  if (rtcFound && (now - lastAlarmCheck >= 1000)) {
+    lastAlarmCheck = now;
+    DateTime currentTime = rtc.now();
+
+    // Check if current time matches scheduled alarm (06:00:00 AM)
+    if (alarmEnabled && !alarmTriggered) {
+      if (currentTime.hour() == alarmHour && currentTime.minute() == alarmMinute && currentTime.second() == 0) {
+        alarmTriggered = true;
+        alarmTriggerStartTime = now;
+        currentScreen = SCREEN_ALARM;
+        displayNeedsUpdate = true;
+        Serial.println("[ALARM] >>> WAKE UP! Alarm triggered at 06:00 AM! <<<");
+      }
+    }
+
+    // Auto-silence after 5 minutes if untouched
+    if (alarmTriggered && (now - alarmTriggerStartTime > 300000)) {
+      alarmTriggered = false;
+      displayNeedsUpdate = true;
+    }
+  }
+
+  // -------------------------------------------------------------
+  // 2. Tap Switch (GPIO 7) - Slap-to-Pause / Snooze Alarm
+  // -------------------------------------------------------------
+  int currentTapState = digitalRead(TAP_SWITCH_PIN);
+  if (currentTapState == LOW && lastTapState == HIGH && (now - lastTapCheck > 200)) {
+    lastTapCheck = now;
+    soundShortChirp();
+
+    if (alarmTriggered) {
+      // Tap switch DISMISSES / SNOOZES the active alarm!
+      alarmTriggered = false;
+      digitalWrite(BUZZER_PIN, LOW);
+      Serial.println("[TAP] Alarm snoozed/dismissed via Tap Switch!");
+      displayNeedsUpdate = true;
+    } else if (currentScreen == SCREEN_FOCUS_TIMER) {
+      // Tap switch PAUSES / RESUMES the Pomodoro timer!
+      timerRunning = !timerRunning;
+      if (timerRunning && rtcFound) {
+        timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+      }
+      Serial.printf("[TAP] Focus Timer Paused/Resumed -> Running: %d\n", timerRunning);
+      displayNeedsUpdate = true;
+    } else {
+      // Tap switch quick action feedback
+      ledState = !ledState;
+      digitalWrite(ONBOARD_LED_PIN, ledState ? LOW : HIGH);
+      Serial.println("[TAP] Tap registered!");
+    }
+  }
+  lastTapState = currentTapState;
+
+  // -------------------------------------------------------------
+  // 3. Universal Quadrature Rotary Encoder Decoder
+  // -------------------------------------------------------------
+  uint8_t currentPins = (digitalRead(ENCODER_CLK_PIN) << 1) | digitalRead(ENCODER_DT_PIN);
   uint8_t lastPins = encoderHistory & 0x03;
 
   if (currentPins != lastPins) {
@@ -249,7 +382,7 @@ void loop() {
     if (step != 0) {
       accumulatedSteps += step;
 
-      // 2 or 4 state steps per physical notch
+      // Filter detent notches cleanly (accumulates 2 quadrature transitions per click)
       if (accumulatedSteps >= 2 || accumulatedSteps <= -2) {
         int delta = (accumulatedSteps > 0) ? 1 : -1;
         accumulatedSteps = 0;
@@ -262,11 +395,14 @@ void loop() {
           displayNeedsUpdate = true;
         } else if (currentScreen == SCREEN_FOCUS_TIMER && !timerRunning) {
           focusMinutes += delta * 5;
-          if (focusMinutes < 5)
-            focusMinutes = 5;
-          if (focusMinutes > 90)
-            focusMinutes = 90;
+          if (focusMinutes < 5) focusMinutes = 5;
+          if (focusMinutes > 90) focusMinutes = 90;
           timerRemainingSeconds = focusMinutes * 60;
+          displayNeedsUpdate = true;
+        } else if (currentScreen == SCREEN_ALARM) {
+          // Dial alarm hour up or down (0 to 23)
+          alarmHour = (alarmHour + delta + 24) % 24;
+          Serial.printf("[ALARM] Set to %02d:%02d AM\n", alarmHour, alarmMinute);
           displayNeedsUpdate = true;
         }
       }
@@ -274,13 +410,11 @@ void loop() {
   }
 
   // -------------------------------------------------------------
-  // 2. Process Encoder Pushbutton (SW) with Short/Long Press
+  // 4. Encoder Pushbutton (SW) with Short/Long Press
   // -------------------------------------------------------------
   int currentButtonState = digitalRead(ENCODER_SW_PIN);
 
-  // Press down detected (150ms debounce lockout)
-  if (currentButtonState == LOW && lastButtonState == HIGH &&
-      (now - lastButtonCheck > 150)) {
+  if (currentButtonState == LOW && lastButtonState == HIGH && (now - lastButtonCheck > 150)) {
     buttonPressStart = now;
     buttonWasPressed = true;
     lastButtonCheck = now;
@@ -288,8 +422,7 @@ void loop() {
   }
 
   // Long press (held for >= 600ms): Return to Main Menu immediately
-  if (buttonWasPressed && currentButtonState == LOW &&
-      (now - buttonPressStart >= 600)) {
+  if (buttonWasPressed && currentButtonState == LOW && (now - buttonPressStart >= 600)) {
     buttonWasPressed = false;
     ledState = !ledState;
     digitalWrite(ONBOARD_LED_PIN, ledState ? LOW : HIGH);
@@ -299,28 +432,38 @@ void loop() {
   }
 
   // Short click (released before 600ms)
-  if (buttonWasPressed && currentButtonState == HIGH &&
-      lastButtonState == LOW) {
+  if (buttonWasPressed && currentButtonState == HIGH && lastButtonState == LOW) {
     buttonWasPressed = false;
     ledState = !ledState;
     digitalWrite(ONBOARD_LED_PIN, ledState ? LOW : HIGH);
 
-    if (currentScreen == SCREEN_MENU) {
+    if (alarmTriggered) {
+      // Clicking also silences the alarm
+      alarmTriggered = false;
+      digitalWrite(BUZZER_PIN, LOW);
+      displayNeedsUpdate = true;
+    } else if (currentScreen == SCREEN_MENU) {
       if (selectedMenuIndex == 0)
         currentScreen = SCREEN_FOCUS_TIMER;
       else if (selectedMenuIndex == 1)
-        currentScreen = SCREEN_PC_METRICS;
+        currentScreen = SCREEN_ALARM;
       else if (selectedMenuIndex == 2)
+        currentScreen = SCREEN_PC_METRICS;
+      else if (selectedMenuIndex == 3)
         currentScreen = SCREEN_TASKS;
       else
         currentScreen = SCREEN_MENU;
-      Serial.printf("[BTN] Short click -> Screen: %d\n", currentScreen);
+      Serial.printf("[BTN] Selected Screen: %d\n", currentScreen);
     } else if (currentScreen == SCREEN_FOCUS_TIMER) {
       timerRunning = !timerRunning;
       if (timerRunning && rtcFound) {
         timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
       }
-      Serial.printf("[BTN] Timer toggled -> Running: %d\n", timerRunning);
+      Serial.printf("[BTN] Focus Timer toggled -> Running: %d\n", timerRunning);
+    } else if (currentScreen == SCREEN_ALARM) {
+      // Toggle alarm enabled / disabled
+      alarmEnabled = !alarmEnabled;
+      Serial.printf("[ALARM] Enabled: %d\n", alarmEnabled);
     } else {
       currentScreen = SCREEN_MENU;
     }
@@ -328,14 +471,14 @@ void loop() {
   }
   lastButtonState = currentButtonState;
 
-  // Refresh clock every 500ms
+  // Refresh clock/display every 500ms
   if (now - lastClockTick >= 500) {
     lastClockTick = now;
     displayNeedsUpdate = true;
   }
 
   // -------------------------------------------------------------
-  // 3. Render Active Screen (Only when state changes or on clock tick)
+  // 5. Render Active Screen
   // -------------------------------------------------------------
   if (displayNeedsUpdate) {
     displayNeedsUpdate = false;
@@ -347,6 +490,9 @@ void loop() {
       break;
     case SCREEN_FOCUS_TIMER:
       renderFocusTimer();
+      break;
+    case SCREEN_ALARM:
+      renderAlarmScreen();
       break;
     case SCREEN_PC_METRICS:
       renderPCMetrics();
