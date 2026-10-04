@@ -51,3 +51,16 @@ This logbook serves as the chronological research and development journal for th
   - Implemented standalone I²C Scanner & OLED Diagnostic Firmware in `firmware/src/main.cpp`.
   - Scans bus for `0x3C` (SSD1306) and `0x68` (DS3231).
   - Renders diagnostic patterns (splash screen, coordinate boundaries, live uptime counter, and onboard LED heartbeat).
+
+---
+
+### [2026-10-04 17:27:42 +05:30] — PlatformIO IDE Extension & Workspace Integration
+* **Author:** Antigravity & Parth
+* **Milestone:** M0 — Toolchain & IDE Setup
+* **Context:** Verified presence of PlatformIO IDE extension in Antigravity IDE (`platformio.platformio-ide-3.3.4-win32-x64`) and verified PlatformIO Core CLI (v6.1.19) located at `~/.platformio/penv/Scripts/platformio.exe`.
+* **Changes Made:**
+  - Created `.vscode/settings.json` specifying `platformio-ide.customPATH` and injecting PlatformIO virtual environment scripts into terminal `PATH`.
+  - Created `.vscode/tasks.json` with standard tasks: `PlatformIO: Build (ESP32-C3)` (`Ctrl+Shift+B`), `PlatformIO: Upload to Board`, `PlatformIO: Serial Monitor`, and `PlatformIO: Clean`.
+  - Added root `platformio.ini` pointing `src_dir`, `include_dir`, and `lib_dir` into `/firmware` so PlatformIO IDE extension immediately recognizes the root project, surfaces the bottom toolbar icons (Build checkmark, Upload arrow, Serial monitor plug), and enables sidebar task tree.
+* **Next Action:** Build verification and flash OLED test firmware to ESP32-C3 SuperMini.
+
