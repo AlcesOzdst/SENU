@@ -566,7 +566,9 @@ void loop() {
         // Button pressed down
         tactilePressStartTime = now;
         tactileLongPressTriggered = false;
-        soundShortChirp();
+        if (!alarmTriggered) {
+          soundShortChirp();
+        }
       } else {
         // Button released
         if (!tactileLongPressTriggered) {
@@ -624,12 +626,6 @@ void loop() {
         noTone(BUZZER_PIN);
         digitalWrite(ONBOARD_LED_PIN, HIGH);
         Serial.println("[ALARM] SNOOZED for 5 minutes via Tactile Button hold!");
-        displayNeedsUpdate = true;
-      } else if (currentScreen == SCREEN_ALARM) {
-        // In Alarm screen: Hold tests the Harry Potter melody!
-        alarmTriggered = true;
-        alarmTriggerStartTime = now;
-        Serial.println("[ALARM] Preview test: Playing Harry Potter Theme!");
         displayNeedsUpdate = true;
       } else if (currentScreen == SCREEN_FOCUS_TIMER) {
         // Reset timer
