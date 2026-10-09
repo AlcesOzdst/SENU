@@ -58,7 +58,14 @@ const char *menuItems[] = {
 constexpr int TOTAL_MENU_ITEMS = sizeof(menuItems) / sizeof(menuItems[0]);
 int selectedMenuIndex = 0;
 
-// Focus Timer State (Supports 1-minute sessions!)
+// Focus Timer State (Supports 1-minute sessions & Pomodoro phases!)
+enum PomodoroPhase : uint8_t {
+  PHASE_FOCUS,
+  PHASE_BREAK
+};
+PomodoroPhase pomoPhase = PHASE_FOCUS;
+constexpr uint8_t BREAK_MINUTES = 5;
+
 bool timerRunning = false;
 int focusMinutes = 25; // Dialable from 1 min to 90 min
 uint32_t timerEndEpoch = 0;
@@ -476,60 +483,143 @@ void renderMenu() {
   display.fillRect(124, scrollY, 2, 11, SSD1306_WHITE);
 }
 
+// ---------- Sleepy Cat Graphics & Micro-Animations ----------
+void drawCat(unsigned long now, uint32_t leftSec) {
+  // The cat blinks every few seconds
+  unsigned long blinkCycle = now % 4200UL;
+  bool blink = blinkCycle < 160UL;
+
+  // During final minute of focus or during break time, cat gets sleepy
+  bool sleepy = (pomoPhase == PHASE_FOCUS && leftSec <= 60 && timerRunning) || (pomoPhase == PHASE_BREAK && timerRunning);
+
+  // Tail
+  display.drawLine(48, 45, 54, 42, SSD1306_WHITE);
+  display.drawLine(54, 42, 58, 35, SSD1306_WHITE);
+  display.drawLine(58, 35, 55, 32, SSD1306_WHITE);
+
+  // Ears
+  display.drawLine(12, 23, 15, 9, SSD1306_WHITE);
+  display.drawLine(15, 9, 26, 19, SSD1306_WHITE);
+
+  display.drawLine(34, 19, 45, 9, SSD1306_WHITE);
+  display.drawLine(45, 9, 48, 23, SSD1306_WHITE);
+
+  // Head
+  display.drawRoundRect(11, 17, 38, 34, 11, SSD1306_WHITE);
+
+  // Cheeks
+  display.drawPixel(16, 34, SSD1306_WHITE);
+  display.drawPixel(43, 34, SSD1306_WHITE);
+
+  // Eyes
+  if (alarmTriggered) {
+    // Alert wide eyes when time is up
+    display.drawCircle(21, 29, 3, SSD1306_WHITE);
+    display.drawCircle(39, 29, 3, SSD1306_WHITE);
+    display.fillCircle(21, 29, 1, SSD1306_WHITE);
+    display.fillCircle(39, 29, 1, SSD1306_WHITE);
+  } else if (blink || sleepy) {
+    display.drawLine(18, 29, 24, 29, SSD1306_WHITE);
+    display.drawLine(36, 29, 42, 29, SSD1306_WHITE);
+  } else {
+    display.fillCircle(21, 29, 2, SSD1306_WHITE);
+    display.fillCircle(39, 29, 2, SSD1306_WHITE);
+  }
+
+  // Nose and mouth
+  display.fillTriangle(28, 34, 32, 34, 30, 37, SSD1306_WHITE);
+  display.drawLine(30, 37, 27, 39, SSD1306_WHITE);
+  display.drawLine(30, 37, 33, 39, SSD1306_WHITE);
+
+  // Whiskers
+  display.drawLine(17, 37, 7, 35, SSD1306_WHITE);
+  display.drawLine(18, 40, 8, 41, SSD1306_WHITE);
+  display.drawLine(43, 37, 53, 35, SSD1306_WHITE);
+  display.drawLine(42, 40, 52, 41, SSD1306_WHITE);
+
+  // Little floating Zs when sleepy
+  if (sleepy && !alarmTriggered) {
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(47, 7);
+    display.print("z");
+    display.setCursor(54, 3);
+    display.print("Z");
+  }
+
+  // Tiny paws
+  display.drawLine(18, 51, 18, 54, SSD1306_WHITE);
+  display.drawLine(40, 51, 40, 54, SSD1306_WHITE);
+}
+
 void renderFocusTimer() {
   display.drawRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SSD1306_WHITE);
 
+  unsigned long now = millis();
+
+  // Header Title on Left (Y = 3)
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(4, 3);
   if (alarmTriggered) {
-    display.print("*** TIME'S UP! ***");
-  } else if (timerRunning) {
-    display.print("FOCUS ACTIVE");
-  } else if (timerRemainingSeconds < (uint32_t)(focusMinutes * 60)) {
-    display.print("FOCUS PAUSED");
+    display.print("MEOW: TIME UP!");
+  } else if (pomoPhase == PHASE_FOCUS) {
+    display.print("FOCUS TIME");
   } else {
-    display.print("SET FOCUS TIME");
+    display.print("BREAK TIME");
   }
 
-  // Mini session indicator on right of header (X = 104)
-  display.setCursor(104, 3);
-  display.printf("%2dm", focusMinutes);
+  // Right Header Status Badge (X = 80)
+  display.setCursor(80, 3);
+  if (alarmTriggered) {
+    display.print("RING!");
+  } else if (timerRunning) {
+    display.printf("RUN %2dm", (pomoPhase == PHASE_FOCUS) ? focusMinutes : BREAK_MINUTES);
+  } else {
+    display.printf("PAU %2dm", (pomoPhase == PHASE_FOCUS) ? focusMinutes : BREAK_MINUTES);
+  }
 
   display.drawLine(2, 12, 125, 12, SSD1306_WHITE);
 
+  // Animated Cat on Left (X = 0..58)
+  drawCat(now, timerRemainingSeconds);
+
+  // Right Side: Countdown Digits (X = 62, Y = 18)
   int mins = timerRemainingSeconds / 60;
   int secs = timerRemainingSeconds % 60;
 
-  // Prominent Centered Large Countdown Digits
-  display.setTextSize(3);
-  display.setCursor(19, 17);
+  display.setTextSize(2);
+  display.setCursor(62, 18);
   display.printf("%02d:%02d", mins, secs);
 
-  // Focus Session Progress Bar
-  uint32_t totalSec = focusMinutes * 60;
+  // Right Side: Progress Bar (X = 62, Y = 38, W = 60, H = 7)
+  uint32_t totalSec = (pomoPhase == PHASE_FOCUS) ? (focusMinutes * 60) : (BREAK_MINUTES * 60);
   uint32_t elapsed = (totalSec > timerRemainingSeconds) ? (totalSec - timerRemainingSeconds) : 0;
-  display.drawRect(14, 43, 100, 6, SSD1306_WHITE);
+  display.drawRect(62, 38, 60, 7, SSD1306_WHITE);
   if (totalSec > 0) {
-    int progW = map(elapsed, 0, totalSec, 0, 96);
-    if (progW > 0) {
-      display.fillRect(16, 45, progW, 2, SSD1306_WHITE);
+    int fillW = map(elapsed, 0, totalSec, 0, 56);
+    if (fillW > 0) {
+      display.fillRect(64, 40, fillW, 3, SSD1306_WHITE);
     }
   }
 
+  // Right Side: Status Encouragement / Controls (X = 62, Y = 51)
   display.setTextSize(1);
-  unsigned long now = millis();
-  char timerFoot[32];
+  char statusMsg[32];
   if (alarmTriggered) {
-    snprintf(timerFoot, sizeof(timerFoot), "Btn:Mute  Hold:Snooze");
-  } else if (timerRunning) {
-    snprintf(timerFoot, sizeof(timerFoot), "Btn:Pause Hold:Reset");
-  } else if (timerRemainingSeconds < (uint32_t)(focusMinutes * 60)) {
-    snprintf(timerFoot, sizeof(timerFoot), "Btn:Resume Clk:Start");
+    snprintf(statusMsg, sizeof(statusMsg), "Tap:Off Hold:Rst");
+  } else if (!timerRunning) {
+    snprintf(statusMsg, sizeof(statusMsg), "PRESS START");
+  } else if (pomoPhase == PHASE_BREAK) {
+    snprintf(statusMsg, sizeof(statusMsg), "take it easy");
+  } else if (timerRemainingSeconds <= 60) {
+    snprintf(statusMsg, sizeof(statusMsg), "almost there!");
   } else {
-    snprintf(timerFoot, sizeof(timerFoot), "Dial:Min  Clk:Start");
+    snprintf(statusMsg, sizeof(statusMsg), "you got this!");
   }
-  drawCarouselText(timerFoot, 4, 53, 20, now);
+
+  // Horizontal marquee carousel for status messages
+  drawCarouselText(statusMsg, 62, 51, 10, now);
 }
 
 void renderAlarmScreen() {
@@ -835,6 +925,14 @@ void loop() {
         timerRunning = false;
         alarmTriggered = true;
         alarmTriggerStartTime = now;
+        // Auto-switch phase when session finishes
+        if (pomoPhase == PHASE_FOCUS) {
+          pomoPhase = PHASE_BREAK;
+          timerRemainingSeconds = BREAK_MINUTES * 60;
+        } else {
+          pomoPhase = PHASE_FOCUS;
+          timerRemainingSeconds = focusMinutes * 60;
+        }
         currentScreen = SCREEN_FOCUS_TIMER; // Switch to timer screen when complete
         displayNeedsUpdate = true;
         Serial.println("[POMO] Session COMPLETE! Harry Potter Theme triggered!");
@@ -857,6 +955,13 @@ void loop() {
           timerRunning = false;
           alarmTriggered = true;
           alarmTriggerStartTime = now;
+          if (pomoPhase == PHASE_FOCUS) {
+            pomoPhase = PHASE_BREAK;
+            timerRemainingSeconds = BREAK_MINUTES * 60;
+          } else {
+            pomoPhase = PHASE_FOCUS;
+            timerRemainingSeconds = focusMinutes * 60;
+          }
           currentScreen = SCREEN_FOCUS_TIMER;
           displayNeedsUpdate = true;
           Serial.println("[POMO] Session COMPLETE! Harry Potter Theme triggered!");
@@ -930,13 +1035,13 @@ void loop() {
             timerRunning = !timerRunning;
             if (timerRunning) {
               if (timerRemainingSeconds == 0) {
-                timerRemainingSeconds = focusMinutes * 60;
+                timerRemainingSeconds = (pomoPhase == PHASE_FOCUS ? focusMinutes : BREAK_MINUTES) * 60;
               }
               if (rtcFound) {
                 timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
               }
             }
-            Serial.printf("[POMO] Focus Timer -> Running: %d\n", timerRunning);
+            Serial.printf("[POMO] Focus Timer -> Running: %d (Phase: %s)\n", timerRunning, pomoPhase == PHASE_FOCUS ? "FOCUS" : "BREAK");
             displayNeedsUpdate = true;
           } else if (currentScreen == SCREEN_PC_METRICS) {
             netForceRefresh = true;
@@ -978,8 +1083,8 @@ void loop() {
       } else if (currentScreen == SCREEN_FOCUS_TIMER) {
         // Reset timer
         timerRunning = false;
-        timerRemainingSeconds = focusMinutes * 60;
-        Serial.println("[POMO] Focus Timer Reset!");
+        timerRemainingSeconds = (pomoPhase == PHASE_FOCUS ? focusMinutes : BREAK_MINUTES) * 60;
+        Serial.printf("[POMO] Focus Timer Reset! (Phase: %s)\n", pomoPhase == PHASE_FOCUS ? "FOCUS" : "BREAK");
         displayNeedsUpdate = true;
       } else if (currentScreen == SCREEN_PC_METRICS) {
         // Long press returns to menu
@@ -1016,12 +1121,16 @@ void loop() {
           Serial.printf("[ENC] Menu Scroll -> Index: %d\n", selectedMenuIndex);
           displayNeedsUpdate = true;
         } else if (currentScreen == SCREEN_FOCUS_TIMER && !timerRunning) {
-          // 1-minute steps! Dial all the way down to 1 minute!
-          focusMinutes += delta;
-          if (focusMinutes < 1) focusMinutes = 1;
-          if (focusMinutes > 90) focusMinutes = 90;
-          timerRemainingSeconds = focusMinutes * 60;
-          Serial.printf("[POMO] Focus set to: %d min\n", focusMinutes);
+          if (pomoPhase == PHASE_FOCUS) {
+            focusMinutes += delta;
+            if (focusMinutes < 1) focusMinutes = 1;
+            if (focusMinutes > 90) focusMinutes = 90;
+            timerRemainingSeconds = focusMinutes * 60;
+            Serial.printf("[POMO] Focus set to: %d min\n", focusMinutes);
+          } else {
+            pomoPhase = PHASE_FOCUS;
+            timerRemainingSeconds = focusMinutes * 60;
+          }
           displayNeedsUpdate = true;
         } else if (currentScreen == SCREEN_ALARM) {
           // Select exact number based on field toggled with Tac Button!
@@ -1095,13 +1204,13 @@ void loop() {
       timerRunning = !timerRunning;
       if (timerRunning) {
         if (timerRemainingSeconds == 0) {
-          timerRemainingSeconds = focusMinutes * 60;
+          timerRemainingSeconds = (pomoPhase == PHASE_FOCUS ? focusMinutes : BREAK_MINUTES) * 60;
         }
         if (rtcFound) {
           timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
         }
       }
-      Serial.printf("[BTN] Focus Timer toggled -> Running: %d\n", timerRunning);
+      Serial.printf("[BTN] Focus Timer toggled -> Running: %d (Phase: %s)\n", timerRunning, pomoPhase == PHASE_FOCUS ? "FOCUS" : "BREAK");
     } else if (currentScreen == SCREEN_ALARM) {
       // Toggle alarm enabled / disabled
       alarmEnabled = !alarmEnabled;
@@ -1113,8 +1222,9 @@ void loop() {
   }
   lastButtonState = currentButtonState;
 
-  // Refresh display at 140ms on screens with carousel marquee for fluid scrolling, 300ms on static screens
-  unsigned long refreshInterval = (currentScreen == SCREEN_PC_METRICS || currentScreen == SCREEN_TASKS || currentScreen == SCREEN_ALARM) ? 140 : 300;
+  // Refresh display at 80ms on Focus Timer for cat blinking animation, 140ms on carousel marquee, 300ms on static screens
+  unsigned long refreshInterval = (currentScreen == SCREEN_FOCUS_TIMER) ? 80 :
+      ((currentScreen == SCREEN_PC_METRICS || currentScreen == SCREEN_TASKS || currentScreen == SCREEN_ALARM) ? 140 : 300);
   if (now - lastClockTick >= refreshInterval) {
     lastClockTick = now;
     displayNeedsUpdate = true;
