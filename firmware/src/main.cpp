@@ -1,8 +1,13 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Arduino.h>
+#include <ArduinoJson.h>
+#include <HTTPClient.h>
 #include <RTClib.h>
+#include <WiFi.h>
+#include <WiFiClient.h>
 #include <Wire.h>
+#include "config.h"
 
 // ==========================================
 // PIN DEFINITIONS FOR ESP32-C3 SUPERMINI
@@ -76,6 +81,95 @@ AlarmEditField currentAlarmField = EDIT_HOURS;
 // Snooze Management
 bool snoozeActive = false;
 uint32_t snoozeUntilEpoch = 0;
+
+// ==========================================
+// NETWORK & PC METRICS (Milestone M3)
+// ==========================================
+enum NetworkStatus {
+  NET_IDLE,
+  NET_CONNECTING,
+  NET_CONNECTED,
+  NET_AGENT_ONLINE,
+  NET_AGENT_OFFLINE
+};
+
+volatile NetworkStatus netStatus = NET_IDLE;
+volatile float pcCpuPercent = 0.0f;
+volatile float pcMemoryPercent = 0.0f;
+volatile uint64_t pcMemoryUsedBytes = 0;
+volatile uint64_t pcMemoryTotalBytes = 0;
+volatile unsigned long lastMetricsFetchTime = 0;
+volatile bool netForceRefresh = false;
+
+char wifiSsid[64] = WIFI_SSID;
+char wifiPass[64] = WIFI_PASS;
+char agentHost[64] = AGENT_HOST;
+int agentPort = AGENT_PORT;
+TaskHandle_t netTaskHandle = NULL;
+
+void networkTask(void *pvParameters) {
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(wifiSsid, wifiPass);
+  netStatus = NET_CONNECTING;
+  Serial.printf("[NET] Connecting to Wi-Fi SSID: '%s'...\n", wifiSsid);
+
+  HTTPClient http;
+  WiFiClient client;
+  http.setTimeout(1500);
+
+  while (true) {
+    if (WiFi.status() == WL_CONNECTED) {
+      if (netStatus == NET_CONNECTING || netStatus == NET_IDLE) {
+        netStatus = NET_CONNECTED;
+        Serial.printf("[NET] Wi-Fi Connected! IP: %s | RSSI: %d dBm\n",
+                      WiFi.localIP().toString().c_str(), WiFi.RSSI());
+        displayNeedsUpdate = true;
+      }
+
+      char url[128];
+      snprintf(url, sizeof(url), "http://%s:%d/metrics/system", agentHost, agentPort);
+      http.begin(client, url);
+
+      int httpCode = http.GET();
+      if (httpCode == HTTP_CODE_OK) {
+        String payload = http.getString();
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, payload);
+        if (!err) {
+          pcCpuPercent = doc["cpu_percent"] | 0.0f;
+          pcMemoryPercent = doc["memory_percent"] | 0.0f;
+          pcMemoryUsedBytes = doc["memory_used_bytes"] | 0ULL;
+          pcMemoryTotalBytes = doc["memory_total_bytes"] | 0ULL;
+          lastMetricsFetchTime = millis();
+          netStatus = NET_AGENT_ONLINE;
+          displayNeedsUpdate = true;
+        }
+      } else {
+        if (netStatus != NET_AGENT_OFFLINE) {
+          Serial.printf("[NET] Agent offline or returned HTTP %d at %s\n", httpCode, url);
+        }
+        netStatus = NET_AGENT_OFFLINE;
+        displayNeedsUpdate = true;
+      }
+      http.end();
+    } else {
+      if (netStatus != NET_CONNECTING) {
+        netStatus = NET_IDLE;
+        WiFi.begin(wifiSsid, wifiPass);
+        netStatus = NET_CONNECTING;
+      }
+    }
+
+    int slices = METRICS_POLL_INTERVAL_MS / 100;
+    for (int i = 0; i < slices; i++) {
+      if (netForceRefresh) {
+        netForceRefresh = false;
+        break;
+      }
+      vTaskDelay(pdMS_TO_TICKS(100));
+    }
+  }
+}
 
 // ==========================================
 // HARRY POTTER / HEDWIG'S THEME (Melody Engine)
@@ -255,6 +349,10 @@ void setup() {
     Serial.println("[RTC] Warning: DS3231 not found on I2C bus (offline fallback).");
   }
 
+  // Launch Background Network Task for Wi-Fi & PC Metrics (FreeRTOS)
+  xTaskCreate(networkTask, "senu_net", 6144, NULL, 1, &netTaskHandle);
+  Serial.println("[NET] Background Wi-Fi & PC metrics polling task launched!");
+
   // Startup confirmation chirp
   soundShortChirp();
 }
@@ -286,6 +384,13 @@ void renderMenu() {
   display.printf("M:%d P:%d%d%d%d", selectedMenuIndex,
                  digitalRead(ENCODER_CLK_PIN), digitalRead(ENCODER_DT_PIN),
                  digitalRead(ENCODER_SW_PIN), digitalRead(PAUSE_BTN_PIN));
+
+  // Live network badge on top-right of header (Y = 27)
+  if (netStatus == NET_AGENT_ONLINE) {
+    display.fillCircle(123, 27, 2, SSD1306_WHITE); // Solid dot: Agent Online
+  } else if (WiFi.status() == WL_CONNECTED) {
+    display.drawCircle(123, 27, 2, SSD1306_WHITE); // Hollow circle: Wi-Fi connected, agent offline
+  }
 
   display.drawLine(2, 33, 125, 33, SSD1306_WHITE);
 
@@ -403,17 +508,60 @@ void renderPCMetrics() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(4, 24);
-  display.print("HOST PC METRICS");
+
+  // Status Header
+  if (netStatus == NET_AGENT_ONLINE) {
+    display.print("PC STATS [ONLINE]");
+    display.fillCircle(122, 27, 2, SSD1306_WHITE);
+  } else if (netStatus == NET_AGENT_OFFLINE) {
+    display.print("PC STATS [OFFLINE]");
+    display.drawCircle(122, 27, 2, SSD1306_WHITE);
+  } else if (netStatus == NET_CONNECTING) {
+    display.print("PC STATS [WIFI...]");
+  } else {
+    display.print("PC STATS [NO WIFI]");
+  }
   display.drawLine(2, 33, 125, 33, SSD1306_WHITE);
 
-  display.setCursor(6, 36);
-  display.print("CPU:  18% [|||       ]");
+  if (netStatus == NET_AGENT_ONLINE) {
+    // Dynamic Gauges with Outline Box & Proportional Fill Bar
+    // Line 1: CPU (Y = 36)
+    display.setCursor(4, 36);
+    display.printf("CPU:%3.0f%%", pcCpuPercent);
+    display.drawRect(52, 36, 72, 7, SSD1306_WHITE);
+    int cpuBarW = map(constrain((int)pcCpuPercent, 0, 100), 0, 100, 0, 68);
+    if (cpuBarW > 0) {
+      display.fillRect(54, 38, cpuBarW, 3, SSD1306_WHITE);
+    }
 
-  display.setCursor(6, 46);
-  display.print("RAM:  42% [|||||     ]");
+    // Line 2: RAM (Y = 45)
+    display.setCursor(4, 45);
+    display.printf("RAM:%3.0f%%", pcMemoryPercent);
+    display.drawRect(52, 45, 72, 7, SSD1306_WHITE);
+    int ramBarW = map(constrain((int)pcMemoryPercent, 0, 100), 0, 100, 0, 68);
+    if (ramBarW > 0) {
+      display.fillRect(54, 47, ramBarW, 3, SSD1306_WHITE);
+    }
 
-  display.setCursor(6, 55);
-  display.print("[Click to Return]");
+    // Line 3: Footer (Y = 54)
+    display.setCursor(4, 54);
+    unsigned long secAgo = (millis() - lastMetricsFetchTime) / 1000;
+    display.printf("Live:%3lus ago [Tac:Ref]", secAgo);
+  } else if (netStatus == NET_AGENT_OFFLINE) {
+    display.setCursor(4, 36);
+    display.printf("Host: %s:%d", agentHost, agentPort);
+    display.setCursor(4, 45);
+    display.print("Start: desktop_agent");
+    display.setCursor(4, 54);
+    display.print("Tac:Poll  Knob:Menu");
+  } else {
+    display.setCursor(4, 36);
+    display.printf("SSID: %.14s", wifiSsid);
+    display.setCursor(4, 45);
+    display.print("Connecting Wi-Fi...");
+    display.setCursor(4, 54);
+    display.print("Tac:Poll  Knob:Menu");
+  }
 }
 
 void renderTasks() {
@@ -483,6 +631,46 @@ void loop() {
         Serial.printf("[RTC] Synced to build time: %02d:%02d:%02d\n", compileTime.hour(), compileTime.minute(), compileTime.second());
         displayNeedsUpdate = true;
       }
+    } else if (line.startsWith("WIFI ") || line.startsWith("wifi ")) {
+      // Format: WIFI <SSID> <PASSWORD>
+      int firstSpace = line.indexOf(' ');
+      int secondSpace = line.indexOf(' ', firstSpace + 1);
+      if (secondSpace > firstSpace) {
+        String newSsid = line.substring(firstSpace + 1, secondSpace);
+        String newPass = line.substring(secondSpace + 1);
+        strncpy(wifiSsid, newSsid.c_str(), sizeof(wifiSsid) - 1);
+        strncpy(wifiPass, newPass.c_str(), sizeof(wifiPass) - 1);
+        Serial.printf("[NET] Updated Wi-Fi credentials: SSID='%s'\n", wifiSsid);
+        WiFi.disconnect();
+        WiFi.begin(wifiSsid, wifiPass);
+        netStatus = NET_CONNECTING;
+        displayNeedsUpdate = true;
+      } else {
+        Serial.println("[NET] Format error! Use: WIFI <ssid> <password>");
+      }
+    } else if (line.startsWith("HOST ") || line.startsWith("host ")) {
+      // Format: HOST <IP>
+      int firstSpace = line.indexOf(' ');
+      String hostStr = line.substring(firstSpace + 1);
+      hostStr.trim();
+      strncpy(agentHost, hostStr.c_str(), sizeof(agentHost) - 1);
+      Serial.printf("[NET] Updated Agent Host to: %s:%d\n", agentHost, agentPort);
+      netForceRefresh = true;
+      displayNeedsUpdate = true;
+    } else if (line.equalsIgnoreCase("STATUS")) {
+      Serial.println("================ SENU STATUS ================");
+      if (rtcFound) {
+        DateTime cur = rtc.now();
+        Serial.printf("RTC Time: %02d:%02d:%02d (%04d-%02d-%02d)\n", cur.hour(), cur.minute(), cur.second(), cur.year(), cur.month(), cur.day());
+      }
+      Serial.printf("Wi-Fi Status: %s | SSID: %s\n", (WiFi.status() == WL_CONNECTED ? "CONNECTED" : "DISCONNECTED"), wifiSsid);
+      if (WiFi.status() == WL_CONNECTED) {
+        Serial.printf("ESP32 IP: %s | RSSI: %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+      }
+      Serial.printf("Desktop Agent: http://%s:%d/metrics/system\n", agentHost, agentPort);
+      Serial.printf("Agent Status: %s\n", (netStatus == NET_AGENT_ONLINE ? "ONLINE" : "OFFLINE"));
+      Serial.printf("CPU: %.1f%% | RAM: %.1f%%\n", pcCpuPercent, pcMemoryPercent);
+      Serial.println("=============================================");
     }
   }
 
@@ -633,6 +821,11 @@ void loop() {
             }
             Serial.printf("[POMO] Focus Timer -> Running: %d\n", timerRunning);
             displayNeedsUpdate = true;
+          } else if (currentScreen == SCREEN_PC_METRICS) {
+            netForceRefresh = true;
+            Serial.println("[METRICS] Force refresh requested via Tactile Button tap!");
+            soundShortChirp();
+            displayNeedsUpdate = true;
           } else {
             // Feedback in menu
             ledState = !ledState;
@@ -670,6 +863,11 @@ void loop() {
         timerRunning = false;
         timerRemainingSeconds = focusMinutes * 60;
         Serial.println("[POMO] Focus Timer Reset!");
+        displayNeedsUpdate = true;
+      } else if (currentScreen == SCREEN_PC_METRICS) {
+        // Long press returns to menu
+        currentScreen = SCREEN_MENU;
+        soundShortChirp();
         displayNeedsUpdate = true;
       }
     }

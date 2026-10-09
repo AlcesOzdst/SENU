@@ -1,6 +1,9 @@
 from fastapi import FastAPI
 import psutil
 
+# Prime psutil CPU counters so subsequent requests return accurate delta percentages
+psutil.cpu_percent(interval=None)
+
 app = FastAPI(title="SENU Desktop Agent", version="0.1.0")
 
 
