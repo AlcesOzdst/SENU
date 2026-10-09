@@ -25,11 +25,11 @@ constexpr int ENCODER_SW_PIN = 3;  // Encoder built-in push switch (Active LOW)
 constexpr int BUZZER_PIN = 6;      // Piezo/Active Buzzer Output (Pin 10 on right header)
 constexpr int PAUSE_BTN_PIN = 7;   // External Tactile Push Button (Active LOW, Pin 11 on right header)
 
-// Display Calibrated Geometry
+// Display Calibrated Geometry (New 128x64 OLED Panel)
 constexpr int SCREEN_WIDTH = 128;
 constexpr int SCREEN_HEIGHT = 64;
-constexpr int SCREEN_Y_OFFSET = 22; // Skip unlit top blocks (Y = 0..21)
-constexpr int USABLE_HEIGHT = 42;   // Active height: 64 - 22 = 42 pixels
+constexpr int SCREEN_Y_OFFSET = 0;   // Full 128x64 active panel (Y = 0..63)
+constexpr int USABLE_HEIGHT = 64;    // Full 64px display canvas
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 RTC_DS3231 rtc;
@@ -358,12 +358,12 @@ void setup() {
 }
 
 void renderMenu() {
-  display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT, SSD1306_WHITE);
+  display.drawRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SSD1306_WHITE);
 
-  // Header Title at Y = 24 with Live Real-World Time & Pin Telemetry
+  // Header Title at Y = 3 with Live Real-World Time & Pin Telemetry
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(4, 24);
+  display.setCursor(4, 3);
 
   // Cached RTC query (every 500ms) to keep I2C bus fast and responsive
   static unsigned long lastRtcRead = 0;
@@ -380,52 +380,47 @@ void renderMenu() {
   }
 
   // Live Hardware Diagnostic: M:[Index] P:[CLK][DT][SW][Btn]
-  display.setCursor(56, 24);
+  display.setCursor(56, 3);
   display.printf("M:%d P:%d%d%d%d", selectedMenuIndex,
                  digitalRead(ENCODER_CLK_PIN), digitalRead(ENCODER_DT_PIN),
                  digitalRead(ENCODER_SW_PIN), digitalRead(PAUSE_BTN_PIN));
 
-  // Live network badge on top-right of header (Y = 27)
+  // Live network badge on top-right of header (X = 123, Y = 6)
   if (netStatus == NET_AGENT_ONLINE) {
-    display.fillCircle(123, 27, 2, SSD1306_WHITE); // Solid dot: Agent Online
+    display.fillCircle(123, 6, 2, SSD1306_WHITE); // Solid dot: Agent Online
   } else if (WiFi.status() == WL_CONNECTED) {
-    display.drawCircle(123, 27, 2, SSD1306_WHITE); // Hollow circle: Wi-Fi connected, agent offline
+    display.drawCircle(123, 6, 2, SSD1306_WHITE); // Hollow circle: Wi-Fi connected, agent offline
   }
 
-  display.drawLine(2, 33, 125, 33, SSD1306_WHITE);
+  display.drawLine(2, 12, 125, 12, SSD1306_WHITE);
 
-  // Calculate visible slice (show 2 items at a time inside the 42px window)
-  int startIndex = (selectedMenuIndex >= 2) ? selectedMenuIndex - 1 : 0;
-  if (startIndex > TOTAL_MENU_ITEMS - 2)
-    startIndex = TOTAL_MENU_ITEMS - 2;
+  // Render all 4 items simultaneously on the full 128x64 display!
+  for (int i = 0; i < TOTAL_MENU_ITEMS; ++i) {
+    int yPos = 14 + (i * 12);
 
-  for (int i = 0; i < 2; ++i) {
-    int itemIdx = startIndex + i;
-    int yPos = 36 + (i * 12);
-
-    if (itemIdx == selectedMenuIndex) {
-      display.fillRect(2, yPos - 1, 124, 11, SSD1306_WHITE);
+    if (i == selectedMenuIndex) {
+      display.fillRect(2, yPos, 122, 11, SSD1306_WHITE);
       display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
-      display.setCursor(6, yPos + 1);
-      display.printf("> %s", menuItems[itemIdx]);
+      display.setCursor(6, yPos + 2);
+      display.printf("> %s", menuItems[i]);
     } else {
       display.setTextColor(SSD1306_WHITE);
-      display.setCursor(6, yPos + 1);
-      display.printf("  %s", menuItems[itemIdx]);
+      display.setCursor(6, yPos + 2);
+      display.printf("  %s", menuItems[i]);
     }
   }
 
-  // Scroll indicator bar on the right edge
-  int scrollY = 36 + (selectedMenuIndex * 6);
-  display.fillRect(123, scrollY, 2, 6, SSD1306_WHITE);
+  // Scroll indicator notch on the right edge
+  int scrollY = 14 + (selectedMenuIndex * 12);
+  display.fillRect(124, scrollY, 2, 11, SSD1306_WHITE);
 }
 
 void renderFocusTimer() {
-  display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT, SSD1306_WHITE);
+  display.drawRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SSD1306_WHITE);
 
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(4, 24);
+  display.setCursor(4, 3);
   if (alarmTriggered) {
     display.print("*** TIME'S UP! ***");
   } else if (timerRunning) {
@@ -435,57 +430,78 @@ void renderFocusTimer() {
   } else {
     display.print("SET FOCUS DURATION");
   }
-  display.drawLine(2, 33, 125, 33, SSD1306_WHITE);
+
+  // Mini session indicator on right of header
+  display.setCursor(102, 3);
+  display.printf("%2dm", focusMinutes);
+
+  display.drawLine(2, 12, 125, 12, SSD1306_WHITE);
 
   int mins = timerRemainingSeconds / 60;
   int secs = timerRemainingSeconds % 60;
 
-  display.setTextSize(2);
-  display.setCursor(34, 36);
+  // Prominent Centered Large Countdown Digits
+  display.setTextSize(3);
+  display.setCursor(19, 17);
   display.printf("%02d:%02d", mins, secs);
+
+  // Focus Session Progress Bar
+  uint32_t totalSec = focusMinutes * 60;
+  uint32_t elapsed = (totalSec > timerRemainingSeconds) ? (totalSec - timerRemainingSeconds) : 0;
+  display.drawRect(14, 43, 100, 6, SSD1306_WHITE);
+  if (totalSec > 0) {
+    int progW = map(elapsed, 0, totalSec, 0, 96);
+    if (progW > 0) {
+      display.fillRect(16, 45, progW, 2, SSD1306_WHITE);
+    }
+  }
 
   display.setTextSize(1);
   display.setCursor(4, 53);
   if (alarmTriggered) {
-    display.print("[Push Btn to Mute]");
+    display.print("[Btn:Mute  Hold:Snooze]");
   } else if (timerRunning) {
-    display.print("[Btn:Pause Hold:Menu]");
+    display.print("[Btn:Pause  Hold:Reset]");
   } else if (timerRemainingSeconds < (uint32_t)(focusMinutes * 60)) {
     display.print("[Btn:Resume Clk:Start]");
   } else {
-    display.print("[Dial:Min  Clk:Start]");
+    display.print("[Dial:Min   Clk:Start]");
   }
 }
 
 void renderAlarmScreen() {
-  display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT, SSD1306_WHITE);
+  display.drawRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SSD1306_WHITE);
 
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(4, 24);
+  display.setCursor(4, 3);
   if (alarmTriggered) {
     display.print("ALARM: HEDWIG THEME!");
   } else if (snoozeActive) {
-    display.print("ALARM (SNOOZED)");
+    display.print("ALARM (SNOOZED +5M)");
   } else {
     display.print("ALARM SETUP");
   }
-  display.drawLine(2, 33, 125, 33, SSD1306_WHITE);
+  display.drawLine(2, 12, 125, 12, SSD1306_WHITE);
 
   if (alarmTriggered) {
-    // Alert Header
-    display.fillRect(4, 35, 120, 14, SSD1306_WHITE);
+    // Inverted Alert Header
+    display.fillRect(4, 16, 120, 22, SSD1306_WHITE);
     display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
-    display.setCursor(8, 38);
-    display.print(">> HARRY POTTER <<");
+    display.setTextSize(2);
+    display.setCursor(16, 20);
+    display.print("WAKE UP!");
 
     display.setTextColor(SSD1306_WHITE);
-    display.setCursor(4, 52);
+    display.setTextSize(1);
+    display.setCursor(8, 42);
+    display.print("Hedwig's Theme Playing");
+    display.setCursor(4, 53);
     display.print("Tap:Off  Hold:Snooze");
   } else {
-    // Big digits showing [HH]:MM or HH:[MM]
+    // Big centered digits showing [HH]:MM or HH:[MM]
     display.setTextSize(2);
-    display.setCursor(18, 36);
+    display.setCursor(22, 18);
     if (currentAlarmField == EDIT_HOURS) {
       display.printf("[%02d]:%02d", alarmHour, alarmMinute);
     } else {
@@ -493,91 +509,110 @@ void renderAlarmScreen() {
     }
 
     display.setTextSize(1);
+    display.setCursor(8, 39);
+    display.printf("Status: %s  Tone:Hedwig", alarmEnabled ? "ACTIVE" : "OFF");
+
     display.setCursor(4, 53);
     if (currentAlarmField == EDIT_HOURS) {
-      display.printf("%s Tac:Min Knob:Hr", alarmEnabled ? "ON" : "--");
+      display.printf("Tac:Min Knob:Hr Clk:%s", alarmEnabled ? "Off" : "On");
     } else {
-      display.printf("%s Tac:Hr  Knob:Min", alarmEnabled ? "ON" : "--");
+      display.printf("Tac:Hr  Knob:Min Clk:%s", alarmEnabled ? "Off" : "On");
     }
   }
 }
 
 void renderPCMetrics() {
-  display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT, SSD1306_WHITE);
+  display.drawRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SSD1306_WHITE);
 
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(4, 24);
+  display.setCursor(4, 3);
 
   // Status Header
   if (netStatus == NET_AGENT_ONLINE) {
-    display.print("PC STATS [ONLINE]");
-    display.fillCircle(122, 27, 2, SSD1306_WHITE);
+    display.print("HOST PC METRICS [OK]");
+    display.fillCircle(123, 6, 2, SSD1306_WHITE);
   } else if (netStatus == NET_AGENT_OFFLINE) {
-    display.print("PC STATS [OFFLINE]");
-    display.drawCircle(122, 27, 2, SSD1306_WHITE);
+    display.print("PC METRICS [OFFLINE]");
+    display.drawCircle(123, 6, 2, SSD1306_WHITE);
   } else if (netStatus == NET_CONNECTING) {
-    display.print("PC STATS [WIFI...]");
+    display.print("PC METRICS [WIFI...]");
   } else {
-    display.print("PC STATS [NO WIFI]");
+    display.print("PC METRICS [NO WIFI]");
   }
-  display.drawLine(2, 33, 125, 33, SSD1306_WHITE);
+  display.drawLine(2, 12, 125, 12, SSD1306_WHITE);
 
   if (netStatus == NET_AGENT_ONLINE) {
     // Dynamic Gauges with Outline Box & Proportional Fill Bar
-    // Line 1: CPU (Y = 36)
-    display.setCursor(4, 36);
+    // Line 1: CPU (Y = 16)
+    display.setCursor(4, 17);
     display.printf("CPU:%3.0f%%", pcCpuPercent);
-    display.drawRect(52, 36, 72, 7, SSD1306_WHITE);
-    int cpuBarW = map(constrain((int)pcCpuPercent, 0, 100), 0, 100, 0, 68);
+    display.drawRect(54, 16, 70, 9, SSD1306_WHITE);
+    int cpuBarW = map(constrain((int)pcCpuPercent, 0, 100), 0, 100, 0, 66);
     if (cpuBarW > 0) {
-      display.fillRect(54, 38, cpuBarW, 3, SSD1306_WHITE);
+      display.fillRect(56, 18, cpuBarW, 5, SSD1306_WHITE);
     }
 
-    // Line 2: RAM (Y = 45)
-    display.setCursor(4, 45);
+    // Line 2: RAM (Y = 28)
+    display.setCursor(4, 29);
     display.printf("RAM:%3.0f%%", pcMemoryPercent);
-    display.drawRect(52, 45, 72, 7, SSD1306_WHITE);
-    int ramBarW = map(constrain((int)pcMemoryPercent, 0, 100), 0, 100, 0, 68);
+    display.drawRect(54, 28, 70, 9, SSD1306_WHITE);
+    int ramBarW = map(constrain((int)pcMemoryPercent, 0, 100), 0, 100, 0, 66);
     if (ramBarW > 0) {
-      display.fillRect(54, 47, ramBarW, 3, SSD1306_WHITE);
+      display.fillRect(56, 30, ramBarW, 5, SSD1306_WHITE);
     }
 
-    // Line 3: Footer (Y = 54)
-    display.setCursor(4, 54);
+    // Line 3: Memory Telemetry (Y = 41)
+    float usedGB = (float)pcMemoryUsedBytes / (1024.0f * 1024.0f * 1024.0f);
+    float totGB = (float)pcMemoryTotalBytes / (1024.0f * 1024.0f * 1024.0f);
+    display.setCursor(4, 41);
+    display.printf("RAM: %.1fG / %.1fG", usedGB, totGB);
+
+    // Line 4: Footer (Y = 53)
+    display.setCursor(4, 53);
     unsigned long secAgo = (millis() - lastMetricsFetchTime) / 1000;
-    display.printf("Live:%3lus ago [Tac:Ref]", secAgo);
+    display.printf("Live: %lus ago [Tac:Ref]", secAgo);
   } else if (netStatus == NET_AGENT_OFFLINE) {
-    display.setCursor(4, 36);
+    display.setCursor(4, 17);
     display.printf("Host: %s:%d", agentHost, agentPort);
-    display.setCursor(4, 45);
-    display.print("Start: desktop_agent");
-    display.setCursor(4, 54);
-    display.print("Tac:Poll  Knob:Menu");
+    display.setCursor(4, 29);
+    display.print("Status: Agent Offline");
+    display.setCursor(4, 41);
+    display.print("Run desktop_agent/run.py");
+    display.setCursor(4, 53);
+    display.print("Tac:Poll   Knob:Return");
   } else {
-    display.setCursor(4, 36);
-    display.printf("SSID: %.14s", wifiSsid);
-    display.setCursor(4, 45);
-    display.print("Connecting Wi-Fi...");
-    display.setCursor(4, 54);
-    display.print("Tac:Poll  Knob:Menu");
+    display.setCursor(4, 17);
+    display.printf("SSID: %.15s", wifiSsid);
+    display.setCursor(4, 29);
+    display.print("Status: Connecting Wi-Fi");
+    display.setCursor(4, 41);
+    display.print("Check 2.4GHz Wi-Fi AP");
+    display.setCursor(4, 53);
+    display.print("Tac:Poll   Knob:Return");
   }
 }
 
 void renderTasks() {
-  display.drawRect(0, SCREEN_Y_OFFSET, SCREEN_WIDTH, USABLE_HEIGHT, SSD1306_WHITE);
+  display.drawRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SSD1306_WHITE);
 
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(4, 24);
+  display.setCursor(4, 3);
   display.print("UPCOMING TASKS");
-  display.drawLine(2, 33, 125, 33, SSD1306_WHITE);
+  display.drawLine(2, 12, 125, 12, SSD1306_WHITE);
 
-  display.setCursor(6, 37);
-  display.print("* Submit Report (2h)");
+  display.setCursor(6, 16);
+  display.print("[ ] 1. Finish M3 Sync");
 
-  display.setCursor(6, 48);
-  display.print("* PCB Review (Tomorrow)");
+  display.setCursor(6, 28);
+  display.print("[ ] 2. Test Harry Potter");
+
+  display.setCursor(6, 40);
+  display.print("[x] 3. DS3231 RTC Clock");
+
+  display.setCursor(6, 52);
+  display.print("[x] 4. New 128x64 OLED");
 }
 
 void loop() {
