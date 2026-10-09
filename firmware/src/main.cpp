@@ -107,6 +107,56 @@ char agentHost[64] = AGENT_HOST;
 int agentPort = AGENT_PORT;
 TaskHandle_t netTaskHandle = NULL;
 
+// Carousel Multi-Page State for Metrics
+int metricsCarouselPage = 0; // 0: Live Gauges, 1: Network & Agent Telemetry
+constexpr int TOTAL_METRICS_PAGES = 2;
+
+// Sanitizes non-ASCII characters (e.g. Unicode curly apostrophe ’ -> ') for standard SSD1306 font
+String sanitizeAscii(const String &in) {
+  String out = "";
+  for (size_t i = 0; i < in.length(); i++) {
+    uint8_t c = (uint8_t)in[i];
+    if (c == 0xE2 && i + 2 < in.length() && (uint8_t)in[i + 1] == 0x80 && (uint8_t)in[i + 2] == 0x99) {
+      out += '\'';
+      i += 2;
+    } else if (c >= 32 && c <= 126) {
+      out += (char)c;
+    } else if (c > 127) {
+      // Skip non-ASCII bytes
+    } else {
+      out += (char)c;
+    }
+  }
+  return out;
+}
+
+// Carousel / Marquee text renderer for strings exceeding display margins
+void drawCarouselText(const String &rawText, int x, int y, int maxChars, unsigned long now) {
+  String text = sanitizeAscii(rawText);
+  display.setCursor(x, y);
+  int len = text.length();
+  if (len <= maxChars) {
+    display.print(text);
+    return;
+  }
+  // Smooth back-and-forth marquee ticker with stable hold times at edges
+  int overflow = len - maxChars;
+  int holdTicks = 4;
+  int oneWayTicks = overflow + holdTicks;
+  int cycleTicks = oneWayTicks * 2;
+  int tickMs = 280; // 280ms per character step
+  int phase = (now / tickMs) % cycleTicks;
+  int offset = 0;
+  if (phase < oneWayTicks) {
+    offset = phase - (holdTicks / 2);
+  } else {
+    offset = (cycleTicks - 1 - phase) - (holdTicks / 2);
+  }
+  if (offset < 0) offset = 0;
+  if (offset > overflow) offset = overflow;
+  display.print(text.substring(offset, offset + maxChars));
+}
+
 void networkTask(void *pvParameters) {
   WiFi.mode(WIFI_STA);
   WiFi.begin(wifiSsid, wifiPass);
@@ -116,6 +166,8 @@ void networkTask(void *pvParameters) {
   HTTPClient http;
   WiFiClient client;
   http.setTimeout(1500);
+
+  unsigned long lastReconnectAttempt = millis();
 
   while (true) {
     if (WiFi.status() == WL_CONNECTED) {
@@ -153,10 +205,18 @@ void networkTask(void *pvParameters) {
       }
       http.end();
     } else {
-      if (netStatus != NET_CONNECTING) {
-        netStatus = NET_IDLE;
+      unsigned long nowTick = millis();
+      if (nowTick - lastReconnectAttempt > 8000) {
+        lastReconnectAttempt = nowTick;
+        int wStatus = WiFi.status();
+        Serial.printf("[NET] Reconnecting to Wi-Fi '%s'... (Status code: %d)\n", wifiSsid, wStatus);
+        if (wStatus == 1) { // 1 = WL_NO_SSID_AVAIL
+          Serial.println("[NET] Note: SSID not found. If using iPhone Hotspot, ensure 'Maximize Compatibility' is ON (enables 2.4 GHz radio)!");
+        }
+        WiFi.disconnect();
         WiFi.begin(wifiSsid, wifiPass);
         netStatus = NET_CONNECTING;
+        displayNeedsUpdate = true;
       }
     }
 
@@ -325,7 +385,7 @@ void setup() {
   Serial.printf("[PINS] GPIO 7 level at boot: %d (1 = Open/HIGH, 0 = Pressed/LOW)\n", digitalRead(PAUSE_BTN_PIN));
 
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-  Wire.setClock(100000);
+  Wire.setClock(400000);
 
   bool displayReady = display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
   if (!displayReady) {
@@ -333,6 +393,7 @@ void setup() {
   }
 
   display.clearDisplay();
+  display.setTextWrap(false); // Disable auto-wrap so lines never collide vertically
   display.display();
 
   // Initialize DS3231 RTC
@@ -424,15 +485,15 @@ void renderFocusTimer() {
   if (alarmTriggered) {
     display.print("*** TIME'S UP! ***");
   } else if (timerRunning) {
-    display.print("FOCUS ACTIVE (POMO)");
+    display.print("FOCUS ACTIVE");
   } else if (timerRemainingSeconds < (uint32_t)(focusMinutes * 60)) {
-    display.print("FOCUS PAUSED (POMO)");
+    display.print("FOCUS PAUSED");
   } else {
-    display.print("SET FOCUS DURATION");
+    display.print("SET FOCUS TIME");
   }
 
-  // Mini session indicator on right of header
-  display.setCursor(102, 3);
+  // Mini session indicator on right of header (X = 104)
+  display.setCursor(104, 3);
   display.printf("%2dm", focusMinutes);
 
   display.drawLine(2, 12, 125, 12, SSD1306_WHITE);
@@ -457,16 +518,18 @@ void renderFocusTimer() {
   }
 
   display.setTextSize(1);
-  display.setCursor(4, 53);
+  unsigned long now = millis();
+  char timerFoot[32];
   if (alarmTriggered) {
-    display.print("[Btn:Mute  Hold:Snooze]");
+    snprintf(timerFoot, sizeof(timerFoot), "Btn:Mute  Hold:Snooze");
   } else if (timerRunning) {
-    display.print("[Btn:Pause  Hold:Reset]");
+    snprintf(timerFoot, sizeof(timerFoot), "Btn:Pause Hold:Reset");
   } else if (timerRemainingSeconds < (uint32_t)(focusMinutes * 60)) {
-    display.print("[Btn:Resume Clk:Start]");
+    snprintf(timerFoot, sizeof(timerFoot), "Btn:Resume Clk:Start");
   } else {
-    display.print("[Dial:Min   Clk:Start]");
+    snprintf(timerFoot, sizeof(timerFoot), "Dial:Min  Clk:Start");
   }
+  drawCarouselText(timerFoot, 4, 53, 20, now);
 }
 
 void renderAlarmScreen() {
@@ -484,6 +547,8 @@ void renderAlarmScreen() {
   }
   display.drawLine(2, 12, 125, 12, SSD1306_WHITE);
 
+  unsigned long now = millis();
+
   if (alarmTriggered) {
     // Inverted Alert Header
     display.fillRect(4, 16, 120, 22, SSD1306_WHITE);
@@ -494,10 +559,8 @@ void renderAlarmScreen() {
 
     display.setTextColor(SSD1306_WHITE);
     display.setTextSize(1);
-    display.setCursor(8, 42);
-    display.print("Hedwig's Theme Playing");
-    display.setCursor(4, 53);
-    display.print("Tap:Off  Hold:Snooze");
+    drawCarouselText("Hedwig's Theme Playing", 8, 42, 19, now);
+    drawCarouselText("Tap:Off  Hold:Snooze", 4, 53, 20, now);
   } else {
     // Big centered digits showing [HH]:MM or HH:[MM]
     display.setTextSize(2);
@@ -509,15 +572,17 @@ void renderAlarmScreen() {
     }
 
     display.setTextSize(1);
-    display.setCursor(8, 39);
-    display.printf("Status: %s  Tone:Hedwig", alarmEnabled ? "ACTIVE" : "OFF");
+    char alarmStatusBuf[32];
+    snprintf(alarmStatusBuf, sizeof(alarmStatusBuf), "Status: %s (Hedwig)", alarmEnabled ? "ACTIVE" : "OFF");
+    drawCarouselText(alarmStatusBuf, 8, 39, 19, now);
 
-    display.setCursor(4, 53);
+    char alarmFootBuf[32];
     if (currentAlarmField == EDIT_HOURS) {
-      display.printf("Tac:Min Knob:Hr Clk:%s", alarmEnabled ? "Off" : "On");
+      snprintf(alarmFootBuf, sizeof(alarmFootBuf), "Tac:Min Knob:Hr Clk:%s", alarmEnabled ? "Off" : "On");
     } else {
-      display.printf("Tac:Hr  Knob:Min Clk:%s", alarmEnabled ? "Off" : "On");
+      snprintf(alarmFootBuf, sizeof(alarmFootBuf), "Tac:Hr  Knob:Min Clk:%s", alarmEnabled ? "Off" : "On");
     }
+    drawCarouselText(alarmFootBuf, 4, 53, 20, now);
   }
 }
 
@@ -526,70 +591,91 @@ void renderPCMetrics() {
 
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(4, 3);
 
-  // Status Header
+  // Status Header: Title on Left, Carousel Slide Indicator on Right (No overlap!)
+  display.setCursor(4, 3);
   if (netStatus == NET_AGENT_ONLINE) {
-    display.print("HOST PC METRICS [OK]");
-    display.fillCircle(123, 6, 2, SSD1306_WHITE);
+    display.print("PC METRICS [OK]");
   } else if (netStatus == NET_AGENT_OFFLINE) {
-    display.print("PC METRICS [OFFLINE]");
-    display.drawCircle(123, 6, 2, SSD1306_WHITE);
+    display.print("METRICS [OFFLINE]");
   } else if (netStatus == NET_CONNECTING) {
-    display.print("PC METRICS [WIFI...]");
+    display.print("METRICS [WIFI...]");
   } else {
-    display.print("PC METRICS [NO WIFI]");
+    display.print("METRICS [NO WIFI]");
   }
+
+  display.setCursor(104, 3);
+  display.printf("%d/%d", metricsCarouselPage + 1, TOTAL_METRICS_PAGES);
   display.drawLine(2, 12, 125, 12, SSD1306_WHITE);
 
-  if (netStatus == NET_AGENT_ONLINE) {
-    // Dynamic Gauges with Outline Box & Proportional Fill Bar
-    // Line 1: CPU (Y = 16)
-    display.setCursor(4, 17);
-    display.printf("CPU:%3.0f%%", pcCpuPercent);
-    display.drawRect(54, 16, 70, 9, SSD1306_WHITE);
-    int cpuBarW = map(constrain((int)pcCpuPercent, 0, 100), 0, 100, 0, 66);
-    if (cpuBarW > 0) {
-      display.fillRect(56, 18, cpuBarW, 5, SSD1306_WHITE);
+  unsigned long now = millis();
+
+  if (metricsCarouselPage == 0) {
+    // ==========================================
+    // SLIDE 1: GAUGES & CPU / RAM UTILIZATION
+    // ==========================================
+    if (netStatus == NET_AGENT_ONLINE) {
+      // Line 1: CPU (Y = 16)
+      display.setCursor(4, 17);
+      display.printf("CPU:%3.0f%%", pcCpuPercent);
+      display.drawRect(54, 16, 70, 9, SSD1306_WHITE);
+      int cpuBarW = map(constrain((int)pcCpuPercent, 0, 100), 0, 100, 0, 66);
+      if (cpuBarW > 0) {
+        display.fillRect(56, 18, cpuBarW, 5, SSD1306_WHITE);
+      }
+
+      // Line 2: RAM (Y = 28)
+      display.setCursor(4, 29);
+      display.printf("RAM:%3.0f%%", pcMemoryPercent);
+      display.drawRect(54, 28, 70, 9, SSD1306_WHITE);
+      int ramBarW = map(constrain((int)pcMemoryPercent, 0, 100), 0, 100, 0, 66);
+      if (ramBarW > 0) {
+        display.fillRect(56, 30, ramBarW, 5, SSD1306_WHITE);
+      }
+
+      // Line 3: Memory Telemetry (Y = 41)
+      float usedGB = (float)pcMemoryUsedBytes / (1024.0f * 1024.0f * 1024.0f);
+      float totGB = (float)pcMemoryTotalBytes / (1024.0f * 1024.0f * 1024.0f);
+      char memBuf[32];
+      snprintf(memBuf, sizeof(memBuf), "RAM: %.1fG / %.1fG", usedGB, totGB);
+      drawCarouselText(memBuf, 4, 41, 20, now);
+
+      // Line 4: Footer (Y = 53)
+      unsigned long secAgo = (now - lastMetricsFetchTime) / 1000;
+      char liveBuf[32];
+      snprintf(liveBuf, sizeof(liveBuf), "Upd: %lus ago [Tac:Ref]", secAgo);
+      drawCarouselText(liveBuf, 4, 53, 20, now);
+    } else {
+      drawCarouselText("Agent: DISCONNECTED", 4, 17, 20, now);
+      drawCarouselText("Run: desktop_agent/run.py", 4, 29, 20, now);
+      drawCarouselText("Turn Knob -> Slide 2", 4, 41, 20, now);
+      drawCarouselText("Tac:Poll  Clk:Menu", 4, 53, 20, now);
     }
-
-    // Line 2: RAM (Y = 28)
-    display.setCursor(4, 29);
-    display.printf("RAM:%3.0f%%", pcMemoryPercent);
-    display.drawRect(54, 28, 70, 9, SSD1306_WHITE);
-    int ramBarW = map(constrain((int)pcMemoryPercent, 0, 100), 0, 100, 0, 66);
-    if (ramBarW > 0) {
-      display.fillRect(56, 30, ramBarW, 5, SSD1306_WHITE);
-    }
-
-    // Line 3: Memory Telemetry (Y = 41)
-    float usedGB = (float)pcMemoryUsedBytes / (1024.0f * 1024.0f * 1024.0f);
-    float totGB = (float)pcMemoryTotalBytes / (1024.0f * 1024.0f * 1024.0f);
-    display.setCursor(4, 41);
-    display.printf("RAM: %.1fG / %.1fG", usedGB, totGB);
-
-    // Line 4: Footer (Y = 53)
-    display.setCursor(4, 53);
-    unsigned long secAgo = (millis() - lastMetricsFetchTime) / 1000;
-    display.printf("Live: %lus ago [Tac:Ref]", secAgo);
-  } else if (netStatus == NET_AGENT_OFFLINE) {
-    display.setCursor(4, 17);
-    display.printf("Host: %s:%d", agentHost, agentPort);
-    display.setCursor(4, 29);
-    display.print("Status: Agent Offline");
-    display.setCursor(4, 41);
-    display.print("Run desktop_agent/run.py");
-    display.setCursor(4, 53);
-    display.print("Tac:Poll   Knob:Return");
   } else {
-    display.setCursor(4, 17);
-    display.printf("SSID: %.15s", wifiSsid);
-    display.setCursor(4, 29);
-    display.print("Status: Connecting Wi-Fi");
-    display.setCursor(4, 41);
-    display.print("Check 2.4GHz Wi-Fi AP");
-    display.setCursor(4, 53);
-    display.print("Tac:Poll   Knob:Return");
+    // ==========================================
+    // SLIDE 2: NETWORK & AGENT TELEMETRY
+    // ==========================================
+    char ssidBuf[48];
+    snprintf(ssidBuf, sizeof(ssidBuf), "SSID: %s", wifiSsid);
+    drawCarouselText(ssidBuf, 4, 17, 20, now);
+
+    if (WiFi.status() == WL_CONNECTED) {
+      char ipBuf[40];
+      snprintf(ipBuf, sizeof(ipBuf), "IP: %s (%ddBm)", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+      drawCarouselText(ipBuf, 4, 29, 20, now);
+    } else {
+      drawCarouselText("WiFi: CONNECTING...", 4, 29, 20, now);
+    }
+
+    char hostBuf[48];
+    snprintf(hostBuf, sizeof(hostBuf), "Host: %s:%d", agentHost, agentPort);
+    drawCarouselText(hostBuf, 4, 41, 20, now);
+
+    if (netStatus == NET_AGENT_ONLINE) {
+      drawCarouselText("Status: AGENT ONLINE", 4, 53, 20, now);
+    } else {
+      drawCarouselText("Tac:Retry  Clk:Menu", 4, 53, 20, now);
+    }
   }
 }
 
@@ -600,19 +686,15 @@ void renderTasks() {
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(4, 3);
   display.print("UPCOMING TASKS");
+  display.setCursor(104, 3);
+  display.print("4/4");
   display.drawLine(2, 12, 125, 12, SSD1306_WHITE);
 
-  display.setCursor(6, 16);
-  display.print("[ ] 1. Finish M3 Sync");
-
-  display.setCursor(6, 28);
-  display.print("[ ] 2. Test Harry Potter");
-
-  display.setCursor(6, 40);
-  display.print("[x] 3. DS3231 RTC Clock");
-
-  display.setCursor(6, 52);
-  display.print("[x] 4. New 128x64 OLED");
+  unsigned long now = millis();
+  drawCarouselText("[ ] 1. Finish M3 Sync", 6, 16, 19, now);
+  drawCarouselText("[ ] 2. Test Hedwig Song", 6, 28, 19, now);
+  drawCarouselText("[x] 3. DS3231 RTC Clock", 6, 40, 19, now);
+  drawCarouselText("[x] 4. New 128x64 OLED", 6, 52, 19, now);
 }
 
 void loop() {
@@ -951,6 +1033,12 @@ void loop() {
             Serial.printf("[ALARM] Set Minute: %02d\n", alarmMinute);
           }
           displayNeedsUpdate = true;
+        } else if (currentScreen == SCREEN_PC_METRICS) {
+          // Switch carousel slide in PC metrics
+          metricsCarouselPage = (metricsCarouselPage + delta + TOTAL_METRICS_PAGES) % TOTAL_METRICS_PAGES;
+          Serial.printf("[METRICS] Carousel Slide: %d\n", metricsCarouselPage + 1);
+          soundShortChirp();
+          displayNeedsUpdate = true;
         }
       }
     }
@@ -1025,8 +1113,9 @@ void loop() {
   }
   lastButtonState = currentButtonState;
 
-  // Refresh clock/display every 500ms
-  if (now - lastClockTick >= 500) {
+  // Refresh display at 140ms on screens with carousel marquee for fluid scrolling, 300ms on static screens
+  unsigned long refreshInterval = (currentScreen == SCREEN_PC_METRICS || currentScreen == SCREEN_TASKS || currentScreen == SCREEN_ALARM) ? 140 : 300;
+  if (now - lastClockTick >= refreshInterval) {
     lastClockTick = now;
     displayNeedsUpdate = true;
   }

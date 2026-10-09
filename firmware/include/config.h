@@ -8,11 +8,11 @@
 // Note: You can also adjust these dynamically at runtime via the Serial Monitor!
 // Send: WIFI <ssid> <password>
 #ifndef WIFI_SSID
-#define WIFI_SSID "Parth"
+#define WIFI_SSID "Divya’s iPhone"
 #endif
 
 #ifndef WIFI_PASS
-#define WIFI_PASS "parth123"
+#define WIFI_PASS "12345678"
 #endif
 
 // Desktop Companion Agent (FastAPI Host)
