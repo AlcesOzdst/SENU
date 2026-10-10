@@ -132,6 +132,7 @@ uint8_t totalSessions = 0;
 uint8_t pauseIndex = 0; // 0: RESUME, 1: +5 MIN, 2: RESET, 3: MENU
 
 bool timerRunning = false;
+bool sessionActive = false; // True when a focus or break session is active (running or paused)
 uint32_t timerEndEpoch = 0;
 uint32_t timerRemainingSeconds = 25 * 60;
 uint32_t pomoCompleteStartTime = 0;
@@ -571,8 +572,8 @@ void drawArcText(int x, int y, const char *str, uint16_t color = SSD1306_WHITE, 
 
 void drawArc(int radius, uint16_t color = SSD1306_WHITE, bool breakCenter = false) {
   for (float deg = 180.0f; deg <= 360.0f; deg += 0.5f) {
-    if (breakCenter && deg >= 244.0f && deg <= 296.0f) {
-      continue; // Line break under FOCUS sector to give generous space for digital clock
+    if (breakCenter && deg >= 252.0f && deg <= 288.0f) {
+      continue; // Clean open archway under Sector 2 (FOCUS) for central digital clock
     }
     float rad = deg * PI_F / 180.0f;
     int x = ARC_CENTER_X + (int)roundf(radius * cosf(rad));
@@ -705,10 +706,10 @@ void drawMenuCenterClock(int cx, int cy, uint32_t now) {
   char timeBuf[8];
   snprintf(timeBuf, sizeof(timeBuf), "%02d%c%02d", h, colon ? ':' : ' ', m);
 
-  // High-contrast, large-format clock (TextSize 2) for immediate desk glanceability
-  display.setTextSize(2);
+  // High-contrast, clean TextSize 1 digital clock (29px wide) centered at cx
+  display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(cx - 29, cy);
+  display.setCursor(cx - 14, cy);
   display.print(timeBuf);
 }
 
@@ -764,12 +765,11 @@ void renderMenu() {
   drawArcSegmentLine(324.0f, SSD1306_WHITE);
 
   // 6. Draw each sector's icon & label (Clean wedge view: no duration text under names)
-  // Sector 0: STATS
+  // Sector 0: STATS (Logo removed per request: only "STATS" label centered in sector)
   {
     bool active = (selectedMenuIndex == ARC_MENU_STATS);
     uint16_t col = active ? SSD1306_BLACK : SSD1306_WHITE;
-    drawStatsIcon(16, 38, col);
-    drawArcText(15, 49, "STATS", col, 1);
+    drawArcText(16, 44, "STATS", col, 1);
   }
 
   // Sector 1: SHORT BREAK
@@ -796,16 +796,15 @@ void renderMenu() {
     drawArcText(93, 35, "LONG", col, 1);
   }
 
-  // Sector 4: ALARM (Clock icon & ALARM label)
+  // Sector 4: ALARM (Word "ALARM" replaced with alarm clock logo per request)
   {
     bool active = (selectedMenuIndex == ARC_MENU_ALARM);
     uint16_t col = active ? SSD1306_BLACK : SSD1306_WHITE;
-    drawAlarmIcon(112, 38, col);
-    drawArcText(112, 49, "ALARM", col, 1);
+    drawAlarmIcon(112, 44, col);
   }
 
-  // 7. Central live current time (Large Size-2 Digital Clock in open arc pedestal)
-  drawMenuCenterClock(ARC_CENTER_X, 47, now);
+  // 7. Central live current time (TextSize 1 with clean clearance)
+  drawMenuCenterClock(ARC_CENTER_X, 52, now);
 
   // 8. Subtle status indicators in upper frame
   if (netStatus == NET_AGENT_ONLINE) {
@@ -820,6 +819,7 @@ void resetTimerToDefault() {
   shortBreakMinutes = 5;
   longBreakMinutes = 15;
   timerRunning = false;
+  sessionActive = false;
   timerRemainingSeconds = 25 * 60;
   if (rtcFound) {
     timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
@@ -837,29 +837,52 @@ void executeMenuSingleTap(uint8_t item) {
   switch (item) {
   case ARC_MENU_FOCUS:
     pomoSession = POMO_SESS_FOCUS;
-    pomoScreen = POMO_SCREEN_FOCUS;
-    timerRemainingSeconds = (uint32_t)focusMinutes * 60;
-    timerRunning = false; // Customize mode: dial minutes, tap knob to start!
-    currentScreen = SCREEN_FOCUS_TIMER;
-    Serial.printf("[MENU] Single-tap FOCUS -> Customize mode (%d min)\n", focusMinutes);
+    if (sessionActive && timerRemainingSeconds > 0) {
+      // PRESERVE SAVED STATE: Do not reset to preset time when returning from menu!
+      currentScreen = SCREEN_FOCUS_TIMER;
+      pomoScreen = timerRunning ? POMO_SCREEN_FOCUS : POMO_SCREEN_PAUSE;
+      Serial.printf("[POMO] Restored saved FOCUS session (%lu s remaining)\n", (unsigned long)timerRemainingSeconds);
+    } else {
+      // Fresh session in customize mode
+      pomoScreen = POMO_SCREEN_FOCUS;
+      timerRemainingSeconds = (uint32_t)focusMinutes * 60;
+      timerRunning = false;
+      sessionActive = false;
+      currentScreen = SCREEN_FOCUS_TIMER;
+      Serial.printf("[MENU] Single-tap FOCUS -> Customize mode (%d min)\n", focusMinutes);
+    }
     break;
 
   case ARC_MENU_SHORT_BREAK:
-    pomoSession = POMO_SESS_SHORT_BREAK;
-    pomoScreen = POMO_SCREEN_BREAK;
-    timerRemainingSeconds = (uint32_t)shortBreakMinutes * 60;
-    timerRunning = false; // Customize mode: dial minutes, tap knob to start!
-    currentScreen = SCREEN_FOCUS_TIMER;
-    Serial.printf("[MENU] Single-tap SHORT BREAK -> Customize mode (%d min)\n", shortBreakMinutes);
+    if (sessionActive && timerRemainingSeconds > 0 && pomoSession == POMO_SESS_SHORT_BREAK) {
+      currentScreen = SCREEN_FOCUS_TIMER;
+      pomoScreen = timerRunning ? POMO_SCREEN_BREAK : POMO_SCREEN_PAUSE;
+      Serial.printf("[POMO] Restored saved SHORT BREAK (%lu s remaining)\n", (unsigned long)timerRemainingSeconds);
+    } else {
+      pomoSession = POMO_SESS_SHORT_BREAK;
+      pomoScreen = POMO_SCREEN_BREAK;
+      timerRemainingSeconds = (uint32_t)shortBreakMinutes * 60;
+      timerRunning = false;
+      sessionActive = false;
+      currentScreen = SCREEN_FOCUS_TIMER;
+      Serial.printf("[MENU] Single-tap SHORT BREAK -> Customize mode (%d min)\n", shortBreakMinutes);
+    }
     break;
 
   case ARC_MENU_LONG_BREAK:
-    pomoSession = POMO_SESS_LONG_BREAK;
-    pomoScreen = POMO_SCREEN_BREAK;
-    timerRemainingSeconds = (uint32_t)longBreakMinutes * 60;
-    timerRunning = false; // Customize mode: dial minutes, tap knob to start!
-    currentScreen = SCREEN_FOCUS_TIMER;
-    Serial.printf("[MENU] Single-tap LONG BREAK -> Customize mode (%d min)\n", longBreakMinutes);
+    if (sessionActive && timerRemainingSeconds > 0 && pomoSession == POMO_SESS_LONG_BREAK) {
+      currentScreen = SCREEN_FOCUS_TIMER;
+      pomoScreen = timerRunning ? POMO_SCREEN_BREAK : POMO_SCREEN_PAUSE;
+      Serial.printf("[POMO] Restored saved LONG BREAK (%lu s remaining)\n", (unsigned long)timerRemainingSeconds);
+    } else {
+      pomoSession = POMO_SESS_LONG_BREAK;
+      pomoScreen = POMO_SCREEN_BREAK;
+      timerRemainingSeconds = (uint32_t)longBreakMinutes * 60;
+      timerRunning = false;
+      sessionActive = false;
+      currentScreen = SCREEN_FOCUS_TIMER;
+      Serial.printf("[MENU] Single-tap LONG BREAK -> Customize mode (%d min)\n", longBreakMinutes);
+    }
     break;
 
   case ARC_MENU_STATS:
@@ -1620,6 +1643,7 @@ void loop() {
       if (diff <= 0) {
         timerRemainingSeconds = 0;
         timerRunning = false;
+        sessionActive = false;
         alarmTriggered = true;
         alarmTriggerStartTime = now;
         pomoCompleteStartTime = now;
@@ -1654,6 +1678,7 @@ void loop() {
         }
         if (timerRemainingSeconds == 0) {
           timerRunning = false;
+          sessionActive = false;
           alarmTriggered = true;
           alarmTriggerStartTime = now;
           pomoCompleteStartTime = now;
@@ -1685,6 +1710,7 @@ void loop() {
     timerRemainingSeconds = (pomoSession == POMO_SESS_FOCUS) ? (focusMinutes * 60) :
                             ((pomoSession == POMO_SESS_LONG_BREAK ? longBreakMinutes : shortBreakMinutes) * 60);
     timerRunning = true;
+    sessionActive = true;
     if (rtcFound) {
       timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
     }
@@ -1772,6 +1798,7 @@ void loop() {
               } else {
                 // Start running
                 timerRunning = true;
+                sessionActive = true;
                 if (timerRemainingSeconds == 0) {
                   timerRemainingSeconds = (pomoScreen == POMO_SCREEN_FOCUS ? focusMinutes :
                                           (pomoSession == POMO_SESS_LONG_BREAK ? longBreakMinutes : shortBreakMinutes)) * 60;
@@ -1786,6 +1813,7 @@ void loop() {
               if (pauseIndex == 0) {
                 // RESUME
                 timerRunning = true;
+                sessionActive = true;
                 pomoScreen = (pomoSession == POMO_SESS_FOCUS) ? POMO_SCREEN_FOCUS : POMO_SCREEN_BREAK;
                 if (timerRemainingSeconds == 0) {
                   timerRemainingSeconds = (pomoSession == POMO_SESS_FOCUS ? focusMinutes :
@@ -1921,34 +1949,38 @@ void loop() {
           displayNeedsUpdate = true;
         } else if (currentScreen == SCREEN_FOCUS_TIMER) {
           if (pomoScreen == POMO_SCREEN_FOCUS && !timerRunning) {
-            int newMin = (int)focusMinutes + delta;
-            if (newMin < 1) newMin = 1;
-            if (newMin > 240) newMin = 240; // Supports long hours up to 4 hours
-            focusMinutes = (uint16_t)newMin;
-            timerRemainingSeconds = (uint32_t)focusMinutes * 60;
-            Serial.printf("[POMO] Focus set to: %d min\n", focusMinutes);
-            displayNeedsUpdate = true;
+            if (!sessionActive) {
+              int newMin = (int)focusMinutes + delta;
+              if (newMin < 1) newMin = 1;
+              if (newMin > 240) newMin = 240; // Supports long hours up to 4 hours
+              focusMinutes = (uint16_t)newMin;
+              timerRemainingSeconds = (uint32_t)focusMinutes * 60;
+              Serial.printf("[POMO] Focus set to: %d min\n", focusMinutes);
+              displayNeedsUpdate = true;
+            }
           } else if (pomoScreen == POMO_SCREEN_PAUSE) {
             pauseIndex = (pauseIndex + delta + 4) % 4;
             soundShortChirp();
             displayNeedsUpdate = true;
           } else if (pomoScreen == POMO_SCREEN_BREAK && !timerRunning) {
-            if (pomoSession == POMO_SESS_LONG_BREAK) {
-              int newMin = (int)longBreakMinutes + delta;
-              if (newMin < 1) newMin = 1;
-              if (newMin > 180) newMin = 180; // Supports long break up to 3 hours
-              longBreakMinutes = (uint16_t)newMin;
-              timerRemainingSeconds = (uint32_t)longBreakMinutes * 60;
-              Serial.printf("[POMO] Long break set to: %d min\n", longBreakMinutes);
-            } else {
-              int newMin = (int)shortBreakMinutes + delta;
-              if (newMin < 1) newMin = 1;
-              if (newMin > 60) newMin = 60;
-              shortBreakMinutes = (uint16_t)newMin;
-              timerRemainingSeconds = (uint32_t)shortBreakMinutes * 60;
-              Serial.printf("[POMO] Short break set to: %d min\n", shortBreakMinutes);
+            if (!sessionActive) {
+              if (pomoSession == POMO_SESS_LONG_BREAK) {
+                int newMin = (int)longBreakMinutes + delta;
+                if (newMin < 1) newMin = 1;
+                if (newMin > 180) newMin = 180; // Supports long break up to 3 hours
+                longBreakMinutes = (uint16_t)newMin;
+                timerRemainingSeconds = (uint32_t)longBreakMinutes * 60;
+                Serial.printf("[POMO] Long break set to: %d min\n", longBreakMinutes);
+              } else {
+                int newMin = (int)shortBreakMinutes + delta;
+                if (newMin < 1) newMin = 1;
+                if (newMin > 60) newMin = 60;
+                shortBreakMinutes = (uint16_t)newMin;
+                timerRemainingSeconds = (uint32_t)shortBreakMinutes * 60;
+                Serial.printf("[POMO] Short break set to: %d min\n", shortBreakMinutes);
+              }
+              displayNeedsUpdate = true;
             }
-            displayNeedsUpdate = true;
           }
         } else if (currentScreen == SCREEN_ALARM) {
           // Select exact number based on field toggled with Tac Button!
@@ -2023,6 +2055,7 @@ void loop() {
         focusMinutes = 25;
         timerRemainingSeconds = 25 * 60;
         timerRunning = true;
+        sessionActive = true;
         if (rtcFound) {
           timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
         }
@@ -2050,6 +2083,7 @@ void loop() {
           Serial.println("[POMO] Paused via Knob click");
         } else {
           timerRunning = true;
+          sessionActive = true;
           if (timerRemainingSeconds == 0) {
             timerRemainingSeconds = (pomoScreen == POMO_SCREEN_FOCUS ? focusMinutes :
                                     (pomoSession == POMO_SESS_LONG_BREAK ? longBreakMinutes : shortBreakMinutes)) * 60;
@@ -2064,6 +2098,7 @@ void loop() {
       } else if (pomoScreen == POMO_SCREEN_PAUSE) {
         if (pauseIndex == 0) {
           timerRunning = true;
+          sessionActive = true;
           pomoScreen = (pomoSession == POMO_SESS_FOCUS) ? POMO_SCREEN_FOCUS : POMO_SCREEN_BREAK;
           if (timerRemainingSeconds == 0) {
             timerRemainingSeconds = (pomoSession == POMO_SESS_FOCUS ? focusMinutes :
