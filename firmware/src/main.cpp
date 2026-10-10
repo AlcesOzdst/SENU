@@ -36,6 +36,9 @@
 #include <WiFiClient.h>
 #include <esp_wifi.h>
 
+#include "animotion.h"
+#include "sample_animation.h"
+
 
 // ==========================================
 // PIN DEFINITIONS FOR ESP32-C3 SUPERMINI
@@ -66,6 +69,16 @@ RTC_DS3231 rtc;
 bool rtcFound = false;
 bool displayNeedsUpdate = true;
 
+// Animotion Engine Player Instance
+animotion::Player animPlayer;
+
+void onAnimFrameRender(const uint8_t *bitmap, uint16_t width, uint16_t height,
+                       uint16_t frame_index, void *user_data) {
+  display.clearDisplay();
+  display.drawBitmap(0, 0, bitmap, width, height, SSD1306_WHITE);
+  display.display();
+}
+
 // ==========================================
 // APP STATE & SCREENS
 // ==========================================
@@ -79,10 +92,18 @@ enum ScreenState {
 
 ScreenState currentScreen = SCREEN_MENU;
 
-const char *menuItems[] = {"1. Focus Timer", "2. Alarm Setup", "3. PC Metrics",
-                           "4. Tasks (Sync)"};
-constexpr int TOTAL_MENU_ITEMS = sizeof(menuItems) / sizeof(menuItems[0]);
-int selectedMenuIndex = 0;
+// ---------- Arc Slider Menu Items ----------
+enum ArcMenuItem : uint8_t {
+  ARC_MENU_STATS = 0,
+  ARC_MENU_SHORT_BREAK = 1,
+  ARC_MENU_FOCUS = 2,
+  ARC_MENU_LONG_BREAK = 3,
+  ARC_MENU_SETTINGS = 4,
+  ARC_MENU_COUNT = 5
+};
+
+constexpr int TOTAL_MENU_ITEMS = ARC_MENU_COUNT;
+int selectedMenuIndex = ARC_MENU_FOCUS; // Default highlight: Center FOCUS (2)
 
 // ==========================================
 // RETRO CAT POMODORO STATE & ASSETS
@@ -508,78 +529,356 @@ void setup() {
   // Startup confirmation chirp
   soundShortChirp();
 
-  // Show Retro Cat Boot Splash
+  // Play Animotion Boot Sequence
+  animPlayer.begin(&ANIMATION_DATA, onAnimFrameRender);
+  animPlayer.setLoop(false);
+  Serial.println("[ANIMOTION] Boot animation playback started!");
+
   unsigned long bootStart = millis();
-  while (millis() - bootStart < 1600) {
-    display.clearDisplay();
-    drawBoot(millis());
-    display.display();
-    delay(40);
+  while (!animPlayer.isFinished() && (millis() - bootStart < 2500)) {
+    animPlayer.update(millis());
+    delay(10);
     if (digitalRead(ENCODER_SW_PIN) == LOW || digitalRead(PAUSE_BTN_PIN) == LOW) {
       break;
     }
   }
 }
 
-void renderMenu() {
-  display.drawRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SSD1306_WHITE);
+// =====================================================
+// ARC SLIDER MENU - FINAL UI (Reference Geometry)
+// =====================================================
+constexpr int ARC_CENTER_X = 64;
+constexpr int ARC_CENTER_Y = 69;
+constexpr int ARC_OUTER_R = 54;
+constexpr int ARC_INNER_R = 29;
+constexpr float PI_F = 3.14159265f;
 
-  // Header Title at Y = 3 with Live Real-World Time & Pin Telemetry
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(4, 3);
+void drawArcText(int x, int y, const char *str, uint16_t color = SSD1306_WHITE, uint8_t size = 1) {
+  int16_t x1, y1;
+  uint16_t tw, th;
+  display.setTextSize(size);
+  display.setTextColor(color);
+  display.getTextBounds(str, 0, 0, &x1, &y1, &tw, &th);
+  display.setCursor(x - (int)tw / 2, y);
+  display.print(str);
+}
 
-  // Cached RTC query (every 500ms) to keep I2C bus fast and responsive
-  static unsigned long lastRtcRead = 0;
-  static DateTime cachedNow;
-  if (rtcFound && (millis() - lastRtcRead > 500 || lastRtcRead == 0)) {
-    cachedNow = rtc.now();
-    lastRtcRead = millis();
+void drawArc(int radius, uint16_t color = SSD1306_WHITE) {
+  for (int deg = 180; deg <= 360; deg++) {
+    float rad = deg * PI_F / 180.0f;
+    int x = ARC_CENTER_X + (int)roundf(radius * cosf(rad));
+    int y = ARC_CENTER_Y + (int)roundf(radius * sinf(rad));
+    if (x >= 0 && x < SCREEN_WIDTH && y >= 0 && y < SCREEN_HEIGHT) {
+      display.drawPixel(x, y, color);
+    }
   }
+}
 
-  if (rtcFound) {
-    display.printf("%02d:%02d:%02d", cachedNow.hour(), cachedNow.minute(),
-                   cachedNow.second());
+void drawArcSegmentLine(float angleDeg, uint16_t color = SSD1306_WHITE) {
+  float rad = angleDeg * PI_F / 180.0f;
+  float c = cosf(rad);
+  float s = sinf(rad);
+  int x1 = ARC_CENTER_X + (int)roundf(ARC_INNER_R * c);
+  int y1 = ARC_CENTER_Y + (int)roundf(ARC_INNER_R * s);
+  int x2 = ARC_CENTER_X + (int)roundf(ARC_OUTER_R * c);
+  int y2 = ARC_CENTER_Y + (int)roundf(ARC_OUTER_R * s);
+  display.drawLine(x1, y1, x2, y2, color);
+}
+
+void fillArcSector(uint8_t sector, uint16_t color = SSD1306_WHITE) {
+  float startDeg = 180.0f + sector * 36.0f;
+  float endDeg = startDeg + 36.0f;
+  for (float a = startDeg; a <= endDeg; a += 0.35f) {
+    float rad = a * PI_F / 180.0f;
+    float c = cosf(rad);
+    float s = sinf(rad);
+    int x1 = ARC_CENTER_X + (int)roundf(ARC_INNER_R * c);
+    int y1 = ARC_CENTER_Y + (int)roundf(ARC_INNER_R * s);
+    int x2 = ARC_CENTER_X + (int)roundf(ARC_OUTER_R * c);
+    int y2 = ARC_CENTER_Y + (int)roundf(ARC_OUTER_R * s);
+    display.drawLine(x1, y1, x2, y2, color);
+  }
+}
+
+void drawFocusIcon(int x, int y, uint16_t color) {
+  // Laptop base line
+  display.drawLine(x - 7, y + 5, x + 7, y + 5, color);
+  // Laptop screen on right
+  display.drawRect(x + 1, y - 4, 7, 8, color);
+  display.drawPixel(x + 3, y - 1, color);
+  // Cat head on left
+  display.fillRoundRect(x - 8, y - 2, 8, 7, 2, color);
+  // Cat ears
+  display.drawPixel(x - 8, y - 4, color);
+  display.drawPixel(x - 7, y - 3, color);
+  display.drawPixel(x - 4, y - 4, color);
+  display.drawPixel(x - 5, y - 3, color);
+  // Cat paw on keyboard
+  display.drawPixel(x, y + 4, color);
+  // Eye
+  uint16_t eyeCol = (color == SSD1306_BLACK) ? SSD1306_WHITE : SSD1306_BLACK;
+  display.drawPixel(x - 6, y, eyeCol);
+}
+
+void drawShortBreakIcon(int x, int y, uint16_t color) {
+  display.fillRoundRect(x - 7, y - 2, 14, 8, 3, color);
+  display.drawPixel(x + 4, y - 4, color);
+  display.drawPixel(x + 5, y - 3, color);
+  display.drawPixel(x + 1, y - 4, color);
+  display.drawPixel(x + 2, y - 3, color);
+  display.drawPixel(x - 8, y + 3, color);
+  display.drawPixel(x - 8, y + 2, color);
+  uint16_t eyeCol = (color == SSD1306_BLACK) ? SSD1306_WHITE : SSD1306_BLACK;
+  display.drawLine(x + 2, y + 1, x + 5, y + 1, eyeCol);
+  display.drawPixel(x + 8, y - 5, color);
+  display.drawPixel(x + 10, y - 8, color);
+}
+
+void drawLongBreakIcon(int x, int y, uint16_t color) {
+  uint16_t oppCol = (color == SSD1306_BLACK) ? SSD1306_WHITE : SSD1306_BLACK;
+  display.fillCircle(x, y, 6, color);
+  display.fillCircle(x + 3, y - 3, 5, oppCol);
+  display.drawPixel(x + 8, y - 4, color);
+  display.drawPixel(x + 7, y - 4, color);
+  display.drawPixel(x + 9, y - 4, color);
+  display.drawPixel(x + 8, y - 5, color);
+  display.drawPixel(x + 8, y - 3, color);
+}
+
+void drawStatsIcon(int x, int y, uint16_t color) {
+  display.fillRect(x - 7, y + 2, 3, 6, color);
+  display.fillRect(x - 2, y - 2, 3, 10, color);
+  display.fillRect(x + 3, y - 6, 3, 14, color);
+}
+
+void drawSettingsIcon(int x, int y, uint16_t color) {
+  uint16_t oppCol = (color == SSD1306_BLACK) ? SSD1306_WHITE : SSD1306_BLACK;
+  display.fillCircle(x, y, 6, color);
+  display.fillCircle(x, y, 2, oppCol);
+  display.drawLine(x - 8, y, x - 6, y, color);
+  display.drawLine(x + 6, y, x + 8, y, color);
+  display.drawLine(x, y - 8, x, y - 6, color);
+  display.drawLine(x, y + 6, x, y + 8, color);
+  display.drawPixel(x - 6, y - 5, color);
+  display.drawPixel(x + 5, y - 5, color);
+  display.drawPixel(x - 6, y + 5, color);
+  display.drawPixel(x + 5, y + 5, color);
+}
+
+void drawMenuCenterCat(int x, int y, uint32_t now) {
+  bool blink = (now % 3600) < 180;
+
+  // Ears
+  display.fillTriangle(x - 12, y - 3, x - 10, y - 14, x - 2, y - 6, SSD1306_WHITE);
+  display.fillTriangle(x + 2, y - 6, x + 10, y - 14, x + 12, y - 3, SSD1306_WHITE);
+
+  // Head
+  display.fillRoundRect(x - 13, y - 8, 26, 21, 6, SSD1306_WHITE);
+
+  // Eyes
+  if (blink) {
+    display.drawLine(x - 8, y + 1, x - 4, y + 1, SSD1306_BLACK);
+    display.drawLine(x + 4, y + 1, x + 8, y + 1, SSD1306_BLACK);
   } else {
-    display.print("SENU MENU");
+    display.fillCircle(x - 6, y + 1, 2, SSD1306_BLACK);
+    display.fillCircle(x + 6, y + 1, 2, SSD1306_BLACK);
+    display.drawPixel(x - 7, y, SSD1306_WHITE);
+    display.drawPixel(x + 5, y, SSD1306_WHITE);
   }
 
-  // Live Hardware Diagnostic: M:[Index] P:[CLK][DT][SW][Btn]
-  display.setCursor(56, 3);
-  display.printf("M:%d P:%d%d%d%d", selectedMenuIndex,
-                 digitalRead(ENCODER_CLK_PIN), digitalRead(ENCODER_DT_PIN),
-                 digitalRead(ENCODER_SW_PIN), digitalRead(PAUSE_BTN_PIN));
+  // Nose and mouth
+  display.drawPixel(x, y + 5, SSD1306_BLACK);
+  display.drawLine(x, y + 6, x - 3, y + 7, SSD1306_BLACK);
+  display.drawLine(x, y + 6, x + 3, y + 7, SSD1306_BLACK);
 
-  // Live network badge on top-right of header (X = 123, Y = 6)
-  if (netStatus == NET_AGENT_ONLINE) {
-    display.fillCircle(123, 6, 2, SSD1306_WHITE); // Solid dot: Agent Online
-  } else if (WiFi.status() == WL_CONNECTED) {
-    display.drawCircle(
-        123, 6, 2,
-        SSD1306_WHITE); // Hollow circle: Wi-Fi connected, agent offline
+  // Cheeks / Whiskers
+  display.drawLine(x - 9, y + 4, x - 15, y + 3, SSD1306_BLACK);
+  display.drawLine(x + 9, y + 4, x + 15, y + 3, SSD1306_BLACK);
+
+  // Radiant joy rays (3 on left, 3 on right)
+  display.drawLine(x - 16, y - 6, x - 20, y - 9, SSD1306_WHITE);
+  display.drawLine(x - 18, y,     x - 23, y,     SSD1306_WHITE);
+  display.drawLine(x - 16, y + 6, x - 20, y + 9, SSD1306_WHITE);
+
+  display.drawLine(x + 16, y - 6, x + 20, y - 9, SSD1306_WHITE);
+  display.drawLine(x + 18, y,     x + 23, y,     SSD1306_WHITE);
+  display.drawLine(x + 16, y + 6, x + 20, y + 9, SSD1306_WHITE);
+
+  // Sparkles above cat
+  display.drawPixel(x - 11, y - 18, SSD1306_WHITE);
+  display.drawPixel(x + 11, y - 18, SSD1306_WHITE);
+}
+
+void drawMenuStars() {
+  display.drawPixel(4, 4, SSD1306_WHITE);
+  display.drawPixel(123, 4, SSD1306_WHITE);
+  display.drawPixel(4, 59, SSD1306_WHITE);
+  display.drawPixel(123, 59, SSD1306_WHITE);
+
+  display.drawPixel(16, 16, SSD1306_WHITE);
+  display.drawPixel(15, 16, SSD1306_WHITE);
+  display.drawPixel(17, 16, SSD1306_WHITE);
+  display.drawPixel(16, 15, SSD1306_WHITE);
+  display.drawPixel(16, 17, SSD1306_WHITE);
+
+  display.drawPixel(25, 27, SSD1306_WHITE);
+  display.drawPixel(11, 42, SSD1306_WHITE);
+
+  display.drawPixel(111, 16, SSD1306_WHITE);
+  display.drawPixel(110, 16, SSD1306_WHITE);
+  display.drawPixel(112, 16, SSD1306_WHITE);
+  display.drawPixel(111, 15, SSD1306_WHITE);
+  display.drawPixel(111, 17, SSD1306_WHITE);
+
+  display.drawPixel(102, 27, SSD1306_WHITE);
+  display.drawPixel(116, 42, SSD1306_WHITE);
+}
+
+void renderMenu() {
+  uint32_t now = millis();
+
+  // 1. Outer rounded boundary frame
+  display.drawRoundRect(1, 1, 126, 62, 3, SSD1306_WHITE);
+
+  // 2. Stars in the background sky
+  drawMenuStars();
+
+  // 3. Highlight the selected sector with solid white fill
+  fillArcSector(selectedMenuIndex, SSD1306_WHITE);
+
+  // 4. Draw outer and inner semicircular arcs
+  drawArc(ARC_OUTER_R, SSD1306_WHITE);
+  drawArc(ARC_INNER_R, SSD1306_WHITE);
+
+  // 5. Draw the 4 segment divider lines
+  drawArcSegmentLine(216.0f, SSD1306_WHITE);
+  drawArcSegmentLine(252.0f, SSD1306_WHITE);
+  drawArcSegmentLine(288.0f, SSD1306_WHITE);
+  drawArcSegmentLine(324.0f, SSD1306_WHITE);
+
+  // 6. Draw each sector's icon & label
+  // Sector 0: STATS
+  {
+    bool active = (selectedMenuIndex == ARC_MENU_STATS);
+    uint16_t col = active ? SSD1306_BLACK : SSD1306_WHITE;
+    drawStatsIcon(24, 38, col);
+    drawArcText(24, 50, "STATS", col, 1);
   }
 
-  display.drawLine(2, 12, 125, 12, SSD1306_WHITE);
-
-  // Render all 4 items simultaneously on the full 128x64 display!
-  for (int i = 0; i < TOTAL_MENU_ITEMS; ++i) {
-    int yPos = 14 + (i * 12);
-
-    if (i == selectedMenuIndex) {
-      display.fillRect(2, yPos, 122, 11, SSD1306_WHITE);
-      display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
-      display.setCursor(6, yPos + 2);
-      display.printf("> %s", menuItems[i]);
+  // Sector 1: SHORT BREAK (5m)
+  {
+    bool active = (selectedMenuIndex == ARC_MENU_SHORT_BREAK);
+    uint16_t col = active ? SSD1306_BLACK : SSD1306_WHITE;
+    drawShortBreakIcon(38, 25, col);
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%dm", shortBreakMinutes);
+    if (active) {
+      drawArcText(38, 29, "BREAK", col, 1);
+      drawArcText(38, 37, buf, col, 1);
     } else {
-      display.setTextColor(SSD1306_WHITE);
-      display.setCursor(6, yPos + 2);
-      display.printf("  %s", menuItems[i]);
+      drawArcText(38, 33, buf, col, 1);
     }
   }
 
-  // Scroll indicator notch on the right edge
-  int scrollY = 14 + (selectedMenuIndex * 12);
-  display.fillRect(124, scrollY, 2, 11, SSD1306_WHITE);
+  // Sector 2: FOCUS (25m)
+  {
+    bool active = (selectedMenuIndex == ARC_MENU_FOCUS);
+    uint16_t col = active ? SSD1306_BLACK : SSD1306_WHITE;
+    drawFocusIcon(64, 18, col);
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%dm", focusMinutes);
+    drawArcText(64, 25, "FOCUS", col, 1);
+    drawArcText(64, 34, buf, col, 1);
+  }
+
+  // Sector 3: LONG BREAK (15m)
+  {
+    bool active = (selectedMenuIndex == ARC_MENU_LONG_BREAK);
+    uint16_t col = active ? SSD1306_BLACK : SSD1306_WHITE;
+    drawLongBreakIcon(89, 25, col);
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%dm", longBreakMinutes);
+    if (active) {
+      drawArcText(89, 29, "LONG", col, 1);
+      drawArcText(89, 37, buf, col, 1);
+    } else {
+      drawArcText(89, 33, buf, col, 1);
+    }
+  }
+
+  // Sector 4: SETTINGS
+  {
+    bool active = (selectedMenuIndex == ARC_MENU_SETTINGS);
+    uint16_t col = active ? SSD1306_BLACK : SSD1306_WHITE;
+    drawSettingsIcon(103, 38, col);
+    drawArcText(103, 50, "SET", col, 1);
+  }
+
+  // 7. Central companion cat
+  drawMenuCenterCat(ARC_CENTER_X, 51, now);
+
+  // 8. Subtle status indicators in upper frame
+  if (netStatus == NET_AGENT_ONLINE) {
+    display.fillCircle(123, 6, 2, SSD1306_WHITE);
+  } else if (WiFi.status() == WL_CONNECTED) {
+    display.drawCircle(123, 6, 2, SSD1306_WHITE);
+  }
+}
+
+void activateArcMenuItem(uint8_t item) {
+  soundShortChirp();
+  switch (item) {
+  case ARC_MENU_FOCUS:
+    pomoSession = POMO_SESS_FOCUS;
+    pomoScreen = POMO_SCREEN_FOCUS;
+    timerRemainingSeconds = (uint32_t)focusMinutes * 60;
+    timerRunning = true;
+    if (rtcFound) {
+      timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+    }
+    currentScreen = SCREEN_FOCUS_TIMER;
+    Serial.printf("[MENU] Started FOCUS session (%d min)\n", focusMinutes);
+    break;
+
+  case ARC_MENU_SHORT_BREAK:
+    pomoSession = POMO_SESS_SHORT_BREAK;
+    pomoScreen = POMO_SCREEN_BREAK;
+    timerRemainingSeconds = (uint32_t)shortBreakMinutes * 60;
+    timerRunning = true;
+    if (rtcFound) {
+      timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+    }
+    currentScreen = SCREEN_FOCUS_TIMER;
+    Serial.printf("[MENU] Started SHORT BREAK (%d min)\n", shortBreakMinutes);
+    break;
+
+  case ARC_MENU_LONG_BREAK:
+    pomoSession = POMO_SESS_LONG_BREAK;
+    pomoScreen = POMO_SCREEN_BREAK;
+    timerRemainingSeconds = (uint32_t)longBreakMinutes * 60;
+    timerRunning = true;
+    if (rtcFound) {
+      timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+    }
+    currentScreen = SCREEN_FOCUS_TIMER;
+    Serial.printf("[MENU] Started LONG BREAK (%d min)\n", longBreakMinutes);
+    break;
+
+  case ARC_MENU_STATS:
+    currentScreen = SCREEN_PC_METRICS;
+    Serial.println("[MENU] Opened PC METRICS screen");
+    break;
+
+  case ARC_MENU_SETTINGS:
+    currentScreen = SCREEN_ALARM;
+    Serial.println("[MENU] Opened ALARM SETTINGS screen");
+    break;
+
+  default:
+    currentScreen = SCREEN_FOCUS_TIMER;
+    break;
+  }
+  displayNeedsUpdate = true;
 }
 
 // =====================================================
@@ -1442,6 +1741,8 @@ void loop() {
                 "[METRICS] Force refresh requested via Tactile Button tap!");
             soundShortChirp();
             displayNeedsUpdate = true;
+          } else if (currentScreen == SCREEN_MENU) {
+            activateArcMenuItem(selectedMenuIndex);
           } else {
             // Feedback in menu
             ledState = !ledState;
@@ -1611,17 +1912,7 @@ void loop() {
       digitalWrite(ONBOARD_LED_PIN, HIGH);
       displayNeedsUpdate = true;
     } else if (currentScreen == SCREEN_MENU) {
-      if (selectedMenuIndex == 0)
-        currentScreen = SCREEN_FOCUS_TIMER;
-      else if (selectedMenuIndex == 1)
-        currentScreen = SCREEN_ALARM;
-      else if (selectedMenuIndex == 2)
-        currentScreen = SCREEN_PC_METRICS;
-      else if (selectedMenuIndex == 3)
-        currentScreen = SCREEN_TASKS;
-      else
-        currentScreen = SCREEN_MENU;
-      Serial.printf("[BTN] Selected Screen: %d\n", currentScreen);
+      activateArcMenuItem(selectedMenuIndex);
     } else if (currentScreen == SCREEN_FOCUS_TIMER) {
       if (alarmTriggered) {
         alarmTriggered = false;
@@ -1693,10 +1984,10 @@ void loop() {
   }
   lastButtonState = currentButtonState;
 
-  // Refresh display at 80ms on Focus Timer for cat blinking animation, 140ms on
+  // Refresh display at 80ms on Focus Timer & Menu for cat blinking animation, 140ms on
   // carousel marquee, 300ms on static screens
   unsigned long refreshInterval =
-      (currentScreen == SCREEN_FOCUS_TIMER)
+      (currentScreen == SCREEN_FOCUS_TIMER || currentScreen == SCREEN_MENU)
           ? 80
           : ((currentScreen == SCREEN_PC_METRICS ||
               currentScreen == SCREEN_TASKS || currentScreen == SCREEN_ALARM)

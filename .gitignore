@@ -24,3 +24,7 @@ docs/LOGBOOK.md
 # Private Hardware & Network Configuration
 firmware/include/config.h
 
+# Cloned Submodule / Scratch Repos
+animotion_repo/
+
+
