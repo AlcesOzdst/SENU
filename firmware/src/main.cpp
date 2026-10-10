@@ -129,7 +129,7 @@ uint16_t shortBreakMinutes = 5;
 uint16_t longBreakMinutes = 15;
 uint8_t completedSessions = 0;
 uint8_t totalSessions = 0;
-uint8_t pauseIndex = 0; // 0: RESUME, 1: +5 MIN, 2: MENU
+uint8_t pauseIndex = 0; // 0: RESUME, 1: +5 MIN, 2: RESET, 3: MENU
 
 bool timerRunning = false;
 uint32_t timerEndEpoch = 0;
@@ -556,7 +556,7 @@ void setup() {
 constexpr int ARC_CENTER_X = 64;
 constexpr int ARC_CENTER_Y = 76;
 constexpr int ARC_OUTER_R = 70;
-constexpr int ARC_INNER_R = 26;
+constexpr int ARC_INNER_R = 30;
 constexpr float PI_F = 3.14159265f;
 
 void drawArcText(int x, int y, const char *str, uint16_t color = SSD1306_WHITE, uint8_t size = 1) {
@@ -569,8 +569,11 @@ void drawArcText(int x, int y, const char *str, uint16_t color = SSD1306_WHITE, 
   display.print(str);
 }
 
-void drawArc(int radius, uint16_t color = SSD1306_WHITE) {
+void drawArc(int radius, uint16_t color = SSD1306_WHITE, bool breakCenter = false) {
   for (float deg = 180.0f; deg <= 360.0f; deg += 0.5f) {
+    if (breakCenter && deg >= 244.0f && deg <= 296.0f) {
+      continue; // Line break under FOCUS sector to give generous space for digital clock
+    }
     float rad = deg * PI_F / 180.0f;
     int x = ARC_CENTER_X + (int)roundf(radius * cosf(rad));
     int y = ARC_CENTER_Y + (int)roundf(radius * sinf(rad));
@@ -686,48 +689,27 @@ void drawSettingsIcon(int x, int y, uint16_t color) {
   drawAlarmIcon(x, y, color);
 }
 
-void drawMenuCenterCat(int x, int y, uint32_t now) {
-  bool blink = (now % 3600) < 180;
-
-  // Head
-  display.fillRoundRect(x - 11, y - 5, 22, 12, 4, SSD1306_WHITE);
-
-  // Ears
-  display.fillTriangle(x - 9, y - 2, x - 7, y - 9, x - 2, y - 3, SSD1306_WHITE);
-  display.fillTriangle(x + 2, y - 3, x + 7, y - 9, x + 9, y - 2, SSD1306_WHITE);
-
-  // Eyes
-  if (blink) {
-    display.drawLine(x - 6, y, x - 3, y, SSD1306_BLACK);
-    display.drawLine(x + 3, y, x + 6, y, SSD1306_BLACK);
+void drawMenuCenterClock(int cx, int cy, uint32_t now) {
+  int h = 0, m = 0;
+  if (rtcFound) {
+    DateTime cur = rtc.now();
+    h = cur.hour();
+    m = cur.minute();
   } else {
-    display.fillCircle(x - 5, y, 2, SSD1306_BLACK);
-    display.fillCircle(x + 5, y, 2, SSD1306_BLACK);
-    display.drawPixel(x - 6, y - 1, SSD1306_WHITE);
-    display.drawPixel(x + 4, y - 1, SSD1306_WHITE);
+    unsigned long sec = millis() / 1000;
+    h = (sec / 3600) % 24;
+    m = (sec % 3600) / 60;
   }
 
-  // Nose and mouth
-  display.drawPixel(x, y + 2, SSD1306_BLACK);
-  display.drawLine(x, y + 3, x - 2, y + 4, SSD1306_BLACK);
-  display.drawLine(x, y + 3, x + 2, y + 4, SSD1306_BLACK);
+  bool colon = (now % 1000) < 500;
+  char timeBuf[8];
+  snprintf(timeBuf, sizeof(timeBuf), "%02d%c%02d", h, colon ? ':' : ' ', m);
 
-  // Cheeks / Whiskers
-  display.drawLine(x - 8, y + 2, x - 13, y + 1, SSD1306_BLACK);
-  display.drawLine(x + 8, y + 2, x + 13, y + 1, SSD1306_BLACK);
-
-  // Radiant joy rays (3 on left, 3 on right)
-  display.drawLine(x - 14, y - 4, x - 18, y - 7, SSD1306_WHITE);
-  display.drawLine(x - 15, y,     x - 20, y,     SSD1306_WHITE);
-  display.drawLine(x - 14, y + 4, x - 18, y + 7, SSD1306_WHITE);
-
-  display.drawLine(x + 14, y - 4, x + 18, y - 7, SSD1306_WHITE);
-  display.drawLine(x + 15, y,     x + 20, y,     SSD1306_WHITE);
-  display.drawLine(x + 14, y + 4, x + 18, y + 7, SSD1306_WHITE);
-
-  // Sparkles above cat
-  display.drawPixel(x - 10, y - 13, SSD1306_WHITE);
-  display.drawPixel(x + 10, y - 13, SSD1306_WHITE);
+  // High-contrast, large-format clock (TextSize 2) for immediate desk glanceability
+  display.setTextSize(2);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(cx - 29, cy);
+  display.print(timeBuf);
 }
 
 void drawMenuStars() {
@@ -771,9 +753,9 @@ void renderMenu() {
   // 3. Highlight the selected sector with solid white fill
   fillArcSector(selectedMenuIndex, SSD1306_WHITE);
 
-  // 4. Draw outer and inner semicircular arcs
-  drawArc(ARC_OUTER_R, SSD1306_WHITE);
-  drawArc(ARC_INNER_R, SSD1306_WHITE);
+  // 4. Draw outer and inner semicircular arcs (inner arc has line break under FOCUS)
+  drawArc(ARC_OUTER_R, SSD1306_WHITE, false);
+  drawArc(ARC_INNER_R, SSD1306_WHITE, true);
 
   // 5. Draw the 4 segment divider lines
   drawArcSegmentLine(216.0f, SSD1306_WHITE);
@@ -798,12 +780,12 @@ void renderMenu() {
     drawArcText(35, 35, "BREAK", col, 1);
   }
 
-  // Sector 2: FOCUS
+  // Sector 2: FOCUS (Positioned with line break spacing above digital clock)
   {
     bool active = (selectedMenuIndex == ARC_MENU_FOCUS);
     uint16_t col = active ? SSD1306_BLACK : SSD1306_WHITE;
-    drawFocusIcon(64, 17, col);
-    drawArcText(64, 31, "FOCUS", col, 1);
+    drawFocusIcon(64, 15, col);
+    drawArcText(64, 27, "FOCUS", col, 1);
   }
 
   // Sector 3: LONG BREAK
@@ -822,8 +804,8 @@ void renderMenu() {
     drawArcText(112, 49, "ALARM", col, 1);
   }
 
-  // 7. Central companion cat
-  drawMenuCenterCat(ARC_CENTER_X, 57, now);
+  // 7. Central live current time (Large Size-2 Digital Clock in open arc pedestal)
+  drawMenuCenterClock(ARC_CENTER_X, 47, now);
 
   // 8. Subtle status indicators in upper frame
   if (netStatus == NET_AGENT_ONLINE) {
@@ -831,6 +813,23 @@ void renderMenu() {
   } else if (WiFi.status() == WL_CONNECTED) {
     display.drawCircle(123, 6, 2, SSD1306_WHITE);
   }
+}
+
+void resetTimerToDefault() {
+  focusMinutes = 25;
+  shortBreakMinutes = 5;
+  longBreakMinutes = 15;
+  timerRunning = false;
+  timerRemainingSeconds = 25 * 60;
+  if (rtcFound) {
+    timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+  }
+  pomoScreen = POMO_SCREEN_FOCUS;
+  pomoSession = POMO_SESS_FOCUS;
+  pauseIndex = 0;
+  soundDoubleChirp();
+  Serial.println("[POMO] Reset timer to default 25m!");
+  displayNeedsUpdate = true;
 }
 
 void executeMenuSingleTap(uint8_t item) {
@@ -985,7 +984,7 @@ void drawCountdown(uint32_t ms, int x, int y) {
   }
 }
 
-// Compact, hand-drawn multi-pose pixel cat
+// Compact, hand-drawn multi-pose pixel cat with rich living animations
 void drawCat(int x, int y, uint8_t pose, uint32_t now) {
   int bob = (pose == 1 && (now / 280) % 2) ? 1 : 0;
   y += bob;
@@ -999,8 +998,10 @@ void drawCat(int x, int y, uint8_t pose, uint32_t now) {
     display.drawLine(x + 39, y + 10, x + 35, y + 8, SSD1306_WHITE);
   }
 
-  // Ears
-  display.fillTriangle(x + 5, y + 13, x + 7, y + 1, x + 16, y + 10, SSD1306_WHITE);
+  // Ears (left ear twitches adorably every ~2.5s when studying)
+  bool earTwitch = (pose == 1) && (((now / 2400) % 4) == 0) && ((now % 2400) < 180);
+  int leftEarTipY = earTwitch ? (y + 4) : (y + 1);
+  display.fillTriangle(x + 5, y + 13, x + 7, leftEarTipY, x + 16, y + 10, SSD1306_WHITE);
   display.fillTriangle(x + 20, y + 10, x + 29, y + 1, x + 32, y + 13, SSD1306_WHITE);
 
   // Head
@@ -1041,19 +1042,54 @@ void drawCat(int x, int y, uint8_t pose, uint32_t now) {
     display.drawLine(x + 12, y + 37, x + 12, y + 40, SSD1306_BLACK);
     display.drawLine(x + 25, y + 37, x + 25, y + 40, SSD1306_BLACK);
 
-    // Animated tail
-    if ((now / 400) % 2) {
-      display.drawLine(x + 28, y + 35, x + 35, y + 30, SSD1306_WHITE);
-      display.drawLine(x + 35, y + 30, x + 37, y + 24, SSD1306_WHITE);
-    } else {
+    // Animated 4-frame fluid tail swish
+    uint8_t tailFrame = (now / 220) % 4;
+    if (tailFrame == 0) {
       display.drawLine(x + 28, y + 35, x + 35, y + 34, SSD1306_WHITE);
-      display.drawLine(x + 35, y + 34, x + 37, y + 29, SSD1306_WHITE);
+      display.drawLine(x + 35, y + 34, x + 38, y + 30, SSD1306_WHITE);
+    } else if (tailFrame == 1 || tailFrame == 3) {
+      display.drawLine(x + 28, y + 35, x + 35, y + 31, SSD1306_WHITE);
+      display.drawLine(x + 35, y + 31, x + 37, y + 25, SSD1306_WHITE);
+    } else { // 2
+      display.drawLine(x + 28, y + 35, x + 34, y + 28, SSD1306_WHITE);
+      display.drawLine(x + 34, y + 28, x + 35, y + 21, SSD1306_WHITE);
+    }
+
+    // Animated typing front paw tapping the keyboard when studying
+    if (pose == 1) {
+      uint8_t typeCycle = (now / 180) % 2;
+      display.fillCircle(x + 28 + (typeCycle ? 1 : 0), y + 35 - (typeCycle ? 1 : 0), 2, SSD1306_WHITE);
+    }
+  }
+
+  // Floating music note / sparkle thought bubble drifting up from head during focus
+  if (pose == 1) {
+    uint32_t bubbleTime = (now + 600) % 3600;
+    if (bubbleTime < 1800) {
+      int bY = y - 2 - (int)(bubbleTime / 180);
+      int bX = x + 31 + (int)((bubbleTime / 240) % 3);
+      if (bY > 16) {
+        if ((bubbleTime / 450) % 2 == 0) {
+          // Floating ♪ note
+          display.drawPixel(bX, bY, SSD1306_WHITE);
+          display.drawLine(bX + 1, bY - 2, bX + 1, bY, SSD1306_WHITE);
+          display.drawPixel(bX + 2, bY - 2, SSD1306_WHITE);
+        } else {
+          // Floating ✦ sparkle
+          display.drawPixel(bX, bY, SSD1306_WHITE);
+          display.drawPixel(bX - 1, bY, SSD1306_WHITE);
+          display.drawPixel(bX + 1, bY, SSD1306_WHITE);
+          display.drawPixel(bX, bY - 1, SSD1306_WHITE);
+          display.drawPixel(bX, bY + 1, SSD1306_WHITE);
+        }
+      }
     }
   }
 
   if (asleep) {
-    textAt(x + 31, y - 4, "z");
-    textAt(x + 37, y - 8, "Z");
+    uint8_t zShift = (now / 350) % 4;
+    textAt(x + 29 + zShift, y - 4 - zShift, "z");
+    textAt(x + 36 + zShift, y - 9 - zShift, "Z");
   }
 }
 
@@ -1081,34 +1117,43 @@ void drawPomoFocus(uint32_t now, uint32_t leftMs) {
   // Desk scene
   display.drawLine(7, 54, 122, 54, SSD1306_WHITE);
 
-  // Lamp
+  // Cozy lamp with subtle warm flicker
   display.drawLine(15, 29, 20, 42, SSD1306_WHITE);
   display.drawLine(20, 42, 14, 47, SSD1306_WHITE);
   display.fillTriangle(9, 31, 28, 31, 24, 39, SSD1306_WHITE);
+  if ((now / 750) % 2 == 0) {
+    display.drawPixel(22, 36, SSD1306_WHITE);
+    display.drawPixel(25, 41, SSD1306_WHITE);
+  }
 
-  // Cat studying
+  // Living animated cat studying
   drawCat(30, 29, 1, now);
 
-  // Laptop
+  // Laptop with live animated code lines scrolling on screen
   display.drawLine(70, 44, 91, 44, SSD1306_WHITE);
   display.drawLine(74, 32, 91, 32, SSD1306_WHITE);
   display.drawLine(74, 32, 70, 44, SSD1306_WHITE);
   display.drawLine(91, 32, 91, 44, SSD1306_WHITE);
   display.drawLine(68, 46, 94, 46, SSD1306_WHITE);
+  uint8_t codeFrame = (now / 350) % 4;
+  if (codeFrame >= 1) display.drawFastHLine(76, 35, 6, SSD1306_WHITE);
+  if (codeFrame >= 2) display.drawFastHLine(76, 38, 9, SSD1306_WHITE);
+  if (codeFrame >= 3) display.drawFastHLine(76, 41, 5, SSD1306_WHITE);
 
-  // Tiny plant
+  // Tiny plant with gently swaying leaf
   display.drawLine(109, 53, 109, 44, SSD1306_WHITE);
   display.drawLine(109, 48, 103, 43, SSD1306_WHITE);
-  display.drawLine(109, 46, 115, 39, SSD1306_WHITE);
+  bool leafSway = (now / 1400) % 2;
+  display.drawLine(109, 46, leafSway ? 116 : 115, leafSway ? 38 : 39, SSD1306_WHITE);
   display.drawLine(102, 53, 117, 53, SSD1306_WHITE);
 
-  drawProgress(leftMs, (uint32_t)focusMinutes * 60000UL);
+  // Note: Bottom progress bar removed per request to maximize clean retro scene
 }
 
 void drawPomoPause(uint32_t now) {
   display.drawRoundRect(1, 1, 126, 62, 3, SSD1306_WHITE);
 
-  centeredText(7, "PAUSED");
+  centeredText(6, "PAUSED");
 
   // Show paused countdown timer on top-left above cat
   char timeBuf[12];
@@ -1123,25 +1168,25 @@ void drawPomoPause(uint32_t now) {
              (unsigned long)(secs / 60),
              (unsigned long)(secs % 60));
   }
-  textAt(9, 17, timeBuf, 1, SSD1306_WHITE);
+  textAt(9, 16, timeBuf, 1, SSD1306_WHITE);
 
   // Sleeping/resting cat
   drawCat(9, 27, 2, now);
 
-  const char *options[] = {"RESUME", "+5 MIN", "MENU"};
+  const char *options[] = {"RESUME", "+5 MIN", "RESET", "MENU"};
 
-  for (uint8_t i = 0; i < 3; i++) {
-    int y = 20 + i * 13;
+  for (uint8_t i = 0; i < 4; i++) {
+    int y = 16 + i * 11;
     if (i == pauseIndex) {
-      display.fillRoundRect(62, y, 60, 12, 2, SSD1306_WHITE);
-      textAt(65, y + 2, ">", 1, SSD1306_BLACK);
-      textAt(73, y + 2, options[i], 1, SSD1306_BLACK);
+      display.fillRoundRect(62, y, 60, 10, 2, SSD1306_WHITE);
+      textAt(64, y + 1, ">", 1, SSD1306_BLACK);
+      textAt(72, y + 1, options[i], 1, SSD1306_BLACK);
     } else {
-      textAt(73, y + 2, options[i], 1, SSD1306_WHITE);
+      textAt(72, y + 1, options[i], 1, SSD1306_WHITE);
     }
   }
 
-  display.drawFastHLine(5, 59, 118, SSD1306_WHITE);
+  display.drawFastHLine(5, 60, 118, SSD1306_WHITE);
 }
 
 void drawPomoBreak(uint32_t now, uint32_t leftMs) {
@@ -1523,6 +1568,10 @@ void loop() {
       Serial.printf("CPU: %.1f%% | RAM: %.1f%%\n", pcCpuPercent,
                     pcMemoryPercent);
       Serial.println("=============================================");
+    } else if (line.equalsIgnoreCase("RESET") || line.equalsIgnoreCase("POMO RESET")) {
+      resetTimerToDefault();
+      Serial.println("[POMO] Pomodoro reset to default 25m via Serial command!");
+      displayNeedsUpdate = true;
     }
   }
 
@@ -1754,6 +1803,10 @@ void loop() {
                 }
                 soundShortChirp();
                 Serial.printf("[POMO] Added +5m via Tac Button! New remaining: %lu s\n", (unsigned long)timerRemainingSeconds);
+              } else if (pauseIndex == 2) {
+                // RESET TO DEFAULT 25
+                resetTimerToDefault();
+                Serial.println("[POMO] Reset to default 25m via Tac Button!");
               } else {
                 // MENU
                 timerRunning = false;
@@ -1817,11 +1870,17 @@ void loop() {
         Serial.println("[ALARM] Preview test: Playing Harry Potter Theme!");
         displayNeedsUpdate = true;
       } else if (currentScreen == SCREEN_FOCUS_TIMER) {
-        // Pause timer & open pause screen without losing current time
-        timerRunning = false;
-        pomoScreen = POMO_SCREEN_PAUSE;
-        pauseIndex = 0;
-        Serial.println("[POMO] Paused via Tac Button Hold!");
+        if (timerRunning) {
+          // Pause timer & open pause screen without losing current time
+          timerRunning = false;
+          pomoScreen = POMO_SCREEN_PAUSE;
+          pauseIndex = 0;
+          Serial.println("[POMO] Paused via Tac Button Hold!");
+        } else {
+          // In customize mode / idle: Hold resets timer back to default 25m!
+          resetTimerToDefault();
+          Serial.println("[POMO] Reset to default 25m via Tac Button Hold!");
+        }
         displayNeedsUpdate = true;
       } else if (currentScreen == SCREEN_PC_METRICS) {
         // Long press returns to menu
@@ -1870,7 +1929,7 @@ void loop() {
             Serial.printf("[POMO] Focus set to: %d min\n", focusMinutes);
             displayNeedsUpdate = true;
           } else if (pomoScreen == POMO_SCREEN_PAUSE) {
-            pauseIndex = (pauseIndex + delta + 3) % 3;
+            pauseIndex = (pauseIndex + delta + 4) % 4;
             soundShortChirp();
             displayNeedsUpdate = true;
           } else if (pomoScreen == POMO_SCREEN_BREAK && !timerRunning) {
@@ -2022,6 +2081,9 @@ void loop() {
           }
           soundShortChirp();
           Serial.printf("[POMO] Added +5m via Knob click! New remaining: %lu s\n", (unsigned long)timerRemainingSeconds);
+        } else if (pauseIndex == 2) {
+          // RESET TO DEFAULT 25
+          resetTimerToDefault();
         } else {
           timerRunning = false;
           currentScreen = SCREEN_MENU;
