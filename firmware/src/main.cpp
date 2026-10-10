@@ -129,7 +129,7 @@ uint16_t shortBreakMinutes = 5;
 uint16_t longBreakMinutes = 15;
 uint8_t completedSessions = 0;
 uint8_t totalSessions = 0;
-uint8_t pauseIndex = 0; // 0: RESUME, 1: RESET, 2: MENU
+uint8_t pauseIndex = 0; // 0: RESUME, 1: +5 MIN, 2: MENU
 
 bool timerRunning = false;
 uint32_t timerEndEpoch = 0;
@@ -888,9 +888,9 @@ void activateArcMenuItem(uint8_t item) {
 // RETRO CAT POMODORO GRAPHICS & SCENE ENGINE
 // =====================================================
 
-void textAt(int x, int y, const char *str, uint8_t size = 1) {
+void textAt(int x, int y, const char *str, uint8_t size = 1, uint16_t color = SSD1306_WHITE) {
   display.setTextSize(size);
-  display.setTextColor(SSD1306_WHITE);
+  display.setTextColor(color);
   display.setCursor(x, y);
   display.print(str);
 }
@@ -1110,25 +1110,38 @@ void drawPomoPause(uint32_t now) {
 
   centeredText(7, "PAUSED");
 
+  // Show paused countdown timer on top-left above cat
+  char timeBuf[12];
+  uint32_t secs = timerRemainingSeconds;
+  if (secs >= 3600) {
+    snprintf(timeBuf, sizeof(timeBuf), "%lu:%02lu:%02lu",
+             (unsigned long)(secs / 3600),
+             (unsigned long)((secs % 3600) / 60),
+             (unsigned long)(secs % 60));
+  } else {
+    snprintf(timeBuf, sizeof(timeBuf), "%02lu:%02lu",
+             (unsigned long)(secs / 60),
+             (unsigned long)(secs % 60));
+  }
+  textAt(9, 17, timeBuf, 1, SSD1306_WHITE);
+
   // Sleeping/resting cat
   drawCat(9, 27, 2, now);
 
-  const char *options[] = {"RESUME", "RESET", "MENU"};
+  const char *options[] = {"RESUME", "+5 MIN", "MENU"};
 
   for (uint8_t i = 0; i < 3; i++) {
-    int y = 21 + i * 13;
+    int y = 20 + i * 13;
     if (i == pauseIndex) {
-      display.fillRoundRect(65, y, 57, 12, 2, SSD1306_WHITE);
-      display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
-      textAt(69, y + 2, ">");
-      textAt(79, y + 2, options[i]);
-      display.setTextColor(SSD1306_WHITE);
+      display.fillRoundRect(62, y, 60, 12, 2, SSD1306_WHITE);
+      textAt(65, y + 2, ">", 1, SSD1306_BLACK);
+      textAt(73, y + 2, options[i], 1, SSD1306_BLACK);
     } else {
-      textAt(78, y + 2, options[i]);
+      textAt(73, y + 2, options[i], 1, SSD1306_WHITE);
     }
   }
 
-  display.drawFastHLine(5, 56, 118, SSD1306_WHITE);
+  display.drawFastHLine(5, 59, 118, SSD1306_WHITE);
 }
 
 void drawPomoBreak(uint32_t now, uint32_t leftMs) {
@@ -1734,12 +1747,13 @@ void loop() {
                 }
                 Serial.println("[POMO] Resumed!");
               } else if (pauseIndex == 1) {
-                // RESET
-                timerRunning = false;
-                timerRemainingSeconds = (pomoSession == POMO_SESS_FOCUS ? focusMinutes :
-                                        (pomoSession == POMO_SESS_LONG_BREAK ? longBreakMinutes : shortBreakMinutes)) * 60;
-                pomoScreen = (pomoSession == POMO_SESS_FOCUS) ? POMO_SCREEN_FOCUS : POMO_SCREEN_BREAK;
-                Serial.println("[POMO] Reset current session!");
+                // ADD TIME (+5 MIN)
+                timerRemainingSeconds += 300;
+                if (rtcFound) {
+                  timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+                }
+                soundShortChirp();
+                Serial.printf("[POMO] Added +5m via Tac Button! New remaining: %lu s\n", (unsigned long)timerRemainingSeconds);
               } else {
                 // MENU
                 timerRunning = false;
@@ -1803,13 +1817,11 @@ void loop() {
         Serial.println("[ALARM] Preview test: Playing Harry Potter Theme!");
         displayNeedsUpdate = true;
       } else if (currentScreen == SCREEN_FOCUS_TIMER) {
-        // Reset current session timer & open pause screen
+        // Pause timer & open pause screen without losing current time
         timerRunning = false;
-        timerRemainingSeconds = (pomoSession == POMO_SESS_FOCUS ? focusMinutes :
-                                (pomoSession == POMO_SESS_LONG_BREAK ? longBreakMinutes : shortBreakMinutes)) * 60;
         pomoScreen = POMO_SCREEN_PAUSE;
         pauseIndex = 0;
-        Serial.println("[POMO] Focus Timer Reset via Tac Button Hold!");
+        Serial.println("[POMO] Paused via Tac Button Hold!");
         displayNeedsUpdate = true;
       } else if (currentScreen == SCREEN_PC_METRICS) {
         // Long press returns to menu
@@ -2003,11 +2015,13 @@ void loop() {
           }
           Serial.println("[POMO] Resumed via Knob click");
         } else if (pauseIndex == 1) {
-          timerRunning = false;
-          timerRemainingSeconds = (pomoSession == POMO_SESS_FOCUS ? focusMinutes :
-                                  (pomoSession == POMO_SESS_LONG_BREAK ? longBreakMinutes : shortBreakMinutes)) * 60;
-          pomoScreen = (pomoSession == POMO_SESS_FOCUS) ? POMO_SCREEN_FOCUS : POMO_SCREEN_BREAK;
-          Serial.println("[POMO] Reset current session");
+          // ADD TIME (+5 MIN)
+          timerRemainingSeconds += 300;
+          if (rtcFound) {
+            timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+          }
+          soundShortChirp();
+          Serial.printf("[POMO] Added +5m via Knob click! New remaining: %lu s\n", (unsigned long)timerRemainingSeconds);
         } else {
           timerRunning = false;
           currentScreen = SCREEN_MENU;
