@@ -863,21 +863,13 @@ void executeMenuSingleTap(uint8_t item) {
   soundShortChirp();
   switch (item) {
   case ARC_MENU_FOCUS:
-    if (sessionActive && timerRemainingSeconds > 0) {
-      if (pomoSession == POMO_SESS_FOCUS) {
-        // Restore saved Focus session
-        currentScreen = SCREEN_FOCUS_TIMER;
-        pomoScreen = timerRunning ? POMO_SCREEN_FOCUS : POMO_SCREEN_PAUSE;
-        Serial.printf("[POMO] Restored saved FOCUS session (%lu s remaining)\n", (unsigned long)timerRemainingSeconds);
-      } else {
-        // Another session (Break) is active! Block starting Focus!
-        currentScreen = SCREEN_FOCUS_TIMER;
-        pomoScreen = timerRunning ? POMO_SCREEN_BREAK : POMO_SCREEN_PAUSE;
-        soundDoubleChirp();
-        Serial.println("[POMO] BREAK session already active! Reset or let timer reach zero before starting FOCUS.");
-      }
+    if (sessionActive && timerRemainingSeconds > 0 && pomoSession == POMO_SESS_FOCUS) {
+      // Restore saved Focus session
+      currentScreen = SCREEN_FOCUS_TIMER;
+      pomoScreen = timerRunning ? POMO_SCREEN_FOCUS : POMO_SCREEN_PAUSE;
+      Serial.printf("[POMO] Restored saved FOCUS session (%lu s remaining)\n", (unsigned long)timerRemainingSeconds);
     } else {
-      // Fresh session in customize mode
+      // Fresh session in customize mode (Break does NOT lock Focus!)
       pomoSession = POMO_SESS_FOCUS;
       pomoScreen = POMO_SCREEN_FOCUS;
       timerRemainingSeconds = (uint32_t)focusMinutes * 60;
@@ -889,20 +881,17 @@ void executeMenuSingleTap(uint8_t item) {
     break;
 
   case ARC_MENU_SHORT_BREAK:
-    if (sessionActive && timerRemainingSeconds > 0) {
-      if (pomoSession == POMO_SESS_SHORT_BREAK) {
-        // Restore saved Short Break session
-        currentScreen = SCREEN_FOCUS_TIMER;
-        pomoScreen = timerRunning ? POMO_SCREEN_BREAK : POMO_SCREEN_PAUSE;
-        Serial.printf("[POMO] Restored saved SHORT BREAK (%lu s remaining)\n", (unsigned long)timerRemainingSeconds);
-      } else {
-        // Another session (Focus or Long Break) is active! Block starting Short Break!
-        currentScreen = SCREEN_FOCUS_TIMER;
-        pomoScreen = (pomoSession == POMO_SESS_FOCUS) ? (timerRunning ? POMO_SCREEN_FOCUS : POMO_SCREEN_PAUSE)
-                                                      : (timerRunning ? POMO_SCREEN_BREAK : POMO_SCREEN_PAUSE);
-        soundDoubleChirp();
-        Serial.println("[POMO] FOCUS/LONG session already active! Reset or let timer reach zero before starting BREAK.");
-      }
+    if (sessionActive && timerRemainingSeconds > 0 && pomoSession == POMO_SESS_FOCUS) {
+      // Focus is active! Block starting Short Break until Focus reaches 0 or is reset!
+      currentScreen = SCREEN_FOCUS_TIMER;
+      pomoScreen = timerRunning ? POMO_SCREEN_FOCUS : POMO_SCREEN_PAUSE;
+      soundDoubleChirp();
+      Serial.println("[POMO] FOCUS session active! Reset or let timer reach zero before starting BREAK.");
+    } else if (sessionActive && timerRemainingSeconds > 0 && pomoSession == POMO_SESS_SHORT_BREAK) {
+      // Re-enter currently active Short Break (running in background!)
+      currentScreen = SCREEN_FOCUS_TIMER;
+      pomoScreen = timerRunning ? POMO_SCREEN_BREAK : POMO_SCREEN_PAUSE;
+      Serial.printf("[POMO] Restored running SHORT BREAK (%lu s remaining)\n", (unsigned long)timerRemainingSeconds);
     } else {
       pomoSession = POMO_SESS_SHORT_BREAK;
       pomoScreen = POMO_SCREEN_BREAK;
@@ -915,20 +904,17 @@ void executeMenuSingleTap(uint8_t item) {
     break;
 
   case ARC_MENU_LONG_BREAK:
-    if (sessionActive && timerRemainingSeconds > 0) {
-      if (pomoSession == POMO_SESS_LONG_BREAK) {
-        // Restore saved Long Break session
-        currentScreen = SCREEN_FOCUS_TIMER;
-        pomoScreen = timerRunning ? POMO_SCREEN_BREAK : POMO_SCREEN_PAUSE;
-        Serial.printf("[POMO] Restored saved LONG BREAK (%lu s remaining)\n", (unsigned long)timerRemainingSeconds);
-      } else {
-        // Another session (Focus or Short Break) is active! Block starting Long Break!
-        currentScreen = SCREEN_FOCUS_TIMER;
-        pomoScreen = (pomoSession == POMO_SESS_FOCUS) ? (timerRunning ? POMO_SCREEN_FOCUS : POMO_SCREEN_PAUSE)
-                                                      : (timerRunning ? POMO_SCREEN_BREAK : POMO_SCREEN_PAUSE);
-        soundDoubleChirp();
-        Serial.println("[POMO] FOCUS/SHORT session already active! Reset or let timer reach zero before starting LONG BREAK.");
-      }
+    if (sessionActive && timerRemainingSeconds > 0 && pomoSession == POMO_SESS_FOCUS) {
+      // Focus is active! Block starting Long Break until Focus reaches 0 or is reset!
+      currentScreen = SCREEN_FOCUS_TIMER;
+      pomoScreen = timerRunning ? POMO_SCREEN_FOCUS : POMO_SCREEN_PAUSE;
+      soundDoubleChirp();
+      Serial.println("[POMO] FOCUS session active! Reset or let timer reach zero before starting LONG BREAK.");
+    } else if (sessionActive && timerRemainingSeconds > 0 && pomoSession == POMO_SESS_LONG_BREAK) {
+      // Re-enter currently active Long Break (running in background!)
+      currentScreen = SCREEN_FOCUS_TIMER;
+      pomoScreen = timerRunning ? POMO_SCREEN_BREAK : POMO_SCREEN_PAUSE;
+      Serial.printf("[POMO] Restored running LONG BREAK (%lu s remaining)\n", (unsigned long)timerRemainingSeconds);
     } else {
       pomoSession = POMO_SESS_LONG_BREAK;
       pomoScreen = POMO_SCREEN_BREAK;
@@ -1907,10 +1893,19 @@ void loop() {
                 resetTimerToDefault();
                 Serial.println("[POMO] Reset to default 25m via Tac Button!");
               } else {
-                // MENU
-                timerRunning = false;
+                // MENU: If Break session was active, keep it running in background!
+                if (pomoSession != POMO_SESS_FOCUS && timerRemainingSeconds > 0) {
+                  timerRunning = true;
+                  sessionActive = true;
+                  if (rtcFound) {
+                    timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+                  }
+                  Serial.printf("[POMO] Returned to SENU Menu - Break KEEPS RUNNING in background (%lu s left)!\n", (unsigned long)timerRemainingSeconds);
+                } else {
+                  timerRunning = false;
+                  Serial.println("[POMO] Returned to SENU Menu (Focus saved)");
+                }
                 currentScreen = SCREEN_MENU;
-                Serial.println("[POMO] Returned to SENU Menu");
               }
               displayNeedsUpdate = true;
             } else if (pomoScreen == POMO_SCREEN_COMPLETE) {
@@ -1970,11 +1965,17 @@ void loop() {
         displayNeedsUpdate = true;
       } else if (currentScreen == SCREEN_FOCUS_TIMER) {
         if (timerRunning) {
-          // Pause timer & open pause screen without losing current time
-          timerRunning = false;
-          pomoScreen = POMO_SCREEN_PAUSE;
-          pauseIndex = 0;
-          Serial.println("[POMO] Paused via Tac Button Hold!");
+          if (pomoSession == POMO_SESS_FOCUS) {
+            // Pause focus timer & open pause screen without losing current time
+            timerRunning = false;
+            pomoScreen = POMO_SCREEN_PAUSE;
+            pauseIndex = 0;
+            Serial.println("[POMO] Focus paused via Tac Button Hold!");
+          } else {
+            // During Break: return directly to Menu while Break continues running in the background!
+            currentScreen = SCREEN_MENU;
+            Serial.println("[POMO] Returned to MENU via Tac Button Hold (Break keeps running)!");
+          }
         } else {
           // In customize mode / idle: Hold resets timer back to default 25m!
           resetTimerToDefault();
@@ -2098,7 +2099,15 @@ void loop() {
     ledState = !ledState;
     digitalWrite(ONBOARD_LED_PIN, ledState ? LOW : HIGH);
     currentScreen = SCREEN_MENU;
-    Serial.println("[BTN] Long press -> Returned to MENU");
+    if (pomoSession != POMO_SESS_FOCUS && sessionActive && timerRemainingSeconds > 0) {
+      timerRunning = true;
+      if (rtcFound) {
+        timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+      }
+      Serial.printf("[BTN] Long press -> Returned to MENU (Break keeps running in background, %lu s left)\n", (unsigned long)timerRemainingSeconds);
+    } else {
+      Serial.println("[BTN] Long press -> Returned to MENU");
+    }
     displayNeedsUpdate = true;
   }
 
@@ -2120,14 +2129,15 @@ void loop() {
       if (pendingMenuSingleClick) {
         // DOUBLE-TAP detected within DOUBLE_TAP_WINDOW_MS:
         pendingMenuSingleClick = false;
-        if (sessionActive && timerRemainingSeconds > 0 && pomoSession != POMO_SESS_FOCUS) {
-          // Break session already active! Do NOT overwrite it with a focus session!
+        if (sessionActive && timerRemainingSeconds > 0 && pomoSession == POMO_SESS_FOCUS) {
+          // Focus session already active! Restore Focus:
           currentScreen = SCREEN_FOCUS_TIMER;
-          pomoScreen = timerRunning ? POMO_SCREEN_BREAK : POMO_SCREEN_PAUSE;
+          pomoScreen = timerRunning ? POMO_SCREEN_FOCUS : POMO_SCREEN_PAUSE;
           soundDoubleChirp();
-          Serial.println("[MENU] Break session already active! Reset or let timer reach zero before starting FOCUS.");
+          Serial.println("[MENU] Focus session already active -> Restored Focus.");
         } else {
           // Quick-start default 25m Pomodoro session immediately!
+          // (Break does NOT lock Focus; double-tap starts Focus freely)
           pomoSession = POMO_SESS_FOCUS;
           pomoScreen = POMO_SCREEN_FOCUS;
           focusMinutes = 25;
@@ -2199,9 +2209,19 @@ void loop() {
           // RESET TO DEFAULT 25
           resetTimerToDefault();
         } else {
-          timerRunning = false;
+          // MENU: If Break session was active, keep it running in background!
+          if (pomoSession != POMO_SESS_FOCUS && timerRemainingSeconds > 0) {
+            timerRunning = true;
+            sessionActive = true;
+            if (rtcFound) {
+              timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+            }
+            Serial.printf("[POMO] Returned to MENU via Pause screen - Break KEEPS RUNNING in background (%lu s left)!\n", (unsigned long)timerRemainingSeconds);
+          } else {
+            timerRunning = false;
+            Serial.println("[POMO] Returned to MENU via Pause screen (Focus saved)");
+          }
           currentScreen = SCREEN_MENU;
-          Serial.println("[POMO] Returned to MENU via Pause screen");
         }
         displayNeedsUpdate = true;
       } else if (pomoScreen == POMO_SCREEN_COMPLETE) {
