@@ -1342,7 +1342,8 @@ void renderFocusTimer() {
 }
 
 void renderAlarmScreen() {
-  display.drawRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SSD1306_WHITE);
+  uint32_t now = millis();
+  display.drawRoundRect(1, 1, 126, 62, 3, SSD1306_WHITE);
 
   int curH = 0, curM = 0;
   if (rtcFound) {
@@ -1355,62 +1356,163 @@ void renderAlarmScreen() {
     curM = (sec % 3600) / 60;
   }
 
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(4, 3);
   if (alarmTriggered) {
-    display.print("ALARM: HEDWIG THEME!");
-  } else if (snoozeActive) {
-    display.print("ALARM (SNOOZED +5M)");
-  } else {
-    display.print("SET ALARM");
-    // Display current real-time in top-right header so user knows current time when setting alarm
-    char nowBuf[16];
-    snprintf(nowBuf, sizeof(nowBuf), "NOW %02d:%02d", curH, curM);
-    display.setCursor(70, 3);
-    display.print(nowBuf);
-  }
-  display.drawLine(2, 12, 125, 12, SSD1306_WHITE);
-
-  unsigned long now = millis();
-
-  if (alarmTriggered) {
-    // Inverted Alert Header
-    display.fillRect(4, 16, 120, 22, SSD1306_WHITE);
+    // -------------------------------------------------------------
+    // RINGING ALERT STATE: High-contrast, clean & unmistakable
+    // -------------------------------------------------------------
+    display.fillRect(3, 3, 122, 12, SSD1306_WHITE);
     display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
-    display.setTextSize(2);
-    display.setCursor(16, 20);
+    display.setTextSize(1);
+    display.setCursor(35, 5);
     display.print("WAKE UP!");
 
-    display.setTextColor(SSD1306_WHITE);
-    display.setTextSize(1);
-    drawCarouselText("Hedwig's Theme Playing", 8, 42, 19, now);
-    drawCarouselText("Tap:Off  Hold:Snooze", 4, 53, 20, now);
-  } else {
-    // Big centered digits showing [HH]:MM or HH:[MM]
+    // Centered alarm time in bold Size 2
     display.setTextSize(2);
-    display.setCursor(22, 18);
-    if (currentAlarmField == EDIT_HOURS) {
-      display.printf("[%02d]:%02d", alarmHour, alarmMinute);
-    } else {
-      display.printf("%02d:[%02d]", alarmHour, alarmMinute);
-    }
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(35, 19);
+    display.printf("%02d:%02d", alarmHour, alarmMinute);
+
+    // Animated vibrating bells on sides
+    bool shake = ((now / 150) % 2) == 0;
+    int b1Y = 25 + (shake ? -1 : 1);
+    int b2Y = 25 + (shake ? 1 : -1);
+    drawAlarmIcon(16, b1Y, SSD1306_WHITE);
+    drawAlarmIcon(112, b2Y, SSD1306_WHITE);
 
     display.setTextSize(1);
-    char alarmStatusBuf[32];
-    snprintf(alarmStatusBuf, sizeof(alarmStatusBuf), "Now:%02d:%02d Alarm:%s",
-             curH, curM, alarmEnabled ? "ON (Hedwig)" : "OFF");
-    drawCarouselText(alarmStatusBuf, 8, 39, 19, now);
+    display.setCursor(20, 38);
+    display.print("Hedwig's Theme");
 
-    char alarmFootBuf[32];
+    display.drawFastHLine(4, 49, 120, SSD1306_WHITE);
+    display.setCursor(7, 53);
+    display.print("Tap:Off");
+    display.drawPixel(64, 56, SSD1306_WHITE);
+    display.setCursor(70, 53);
+    display.print("Hold:Snooze");
+
+  } else if (snoozeActive) {
+    // -------------------------------------------------------------
+    // SNOOZE STATE: Calm remaining sleep countdown with moon & stars
+    // -------------------------------------------------------------
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(6, 4);
+    display.print("SNOOZED");
+
+    char nowBuf[16];
+    snprintf(nowBuf, sizeof(nowBuf), "NOW %02d:%02d", curH, curM);
+    display.setCursor(70, 4);
+    display.print(nowBuf);
+
+    display.drawFastHLine(3, 13, 122, SSD1306_WHITE);
+
+    uint32_t curEpoch = rtcFound ? rtc.now().unixtime() : (millis() / 1000);
+    uint32_t left = (snoozeUntilEpoch > curEpoch) ? (snoozeUntilEpoch - curEpoch) : 0;
+
+    display.setTextSize(2);
+    display.setCursor(35, 19);
+    display.printf("%02lu:%02lu", (unsigned long)(left / 60), (unsigned long)(left % 60));
+
+    // Sleeping crescent moon & star sparkles
+    display.fillCircle(16, 26, 4, SSD1306_WHITE);
+    display.fillCircle(18, 24, 4, SSD1306_BLACK);
+    display.drawPixel(24, 20, SSD1306_WHITE);
+    display.drawPixel(108, 22, SSD1306_WHITE);
+    display.drawPixel(114, 29, SSD1306_WHITE);
+
+    display.setTextSize(1);
+    display.setCursor(25, 38);
+    display.printf("Alarm at %02d:%02d", alarmHour, alarmMinute);
+
+    display.drawFastHLine(4, 49, 120, SSD1306_WHITE);
+    display.setCursor(14, 53);
+    display.print("Tap: Cancel Snooze");
+
+  } else {
+    // -------------------------------------------------------------
+    // SETUP STATE: Minimalist, Scandinavian/Braun aesthetic
+    // -------------------------------------------------------------
+    // 1. Sleek Top Header
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+
+    // Mini alarm clock icon
+    display.drawCircle(8, 7, 3, SSD1306_WHITE);
+    display.drawPixel(8, 7, SSD1306_WHITE);
+    display.drawPixel(8, 6, SSD1306_WHITE);
+    display.drawPixel(6, 3, SSD1306_WHITE);
+    display.drawPixel(10, 3, SSD1306_WHITE);
+
+    display.setCursor(15, 4);
+    display.print("ALARM");
+
+    char nowBuf[16];
+    snprintf(nowBuf, sizeof(nowBuf), "NOW %02d:%02d", curH, curM);
+    display.setCursor(70, 4);
+    display.print(nowBuf);
+
+    display.drawFastHLine(3, 13, 122, SSD1306_WHITE);
+
+    // 2. Hero Digits with high-contrast active field pill
+    char hBuf[4], mBuf[4];
+    snprintf(hBuf, sizeof(hBuf), "%02d", alarmHour);
+    snprintf(mBuf, sizeof(mBuf), "%02d", alarmMinute);
+
+    display.setTextSize(2);
     if (currentAlarmField == EDIT_HOURS) {
-      snprintf(alarmFootBuf, sizeof(alarmFootBuf), "Tac:Min Knob:Hr Clk:%s",
-               alarmEnabled ? "Off" : "On");
+      display.fillRoundRect(34, 17, 26, 17, 3, SSD1306_WHITE);
+      display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+      display.setCursor(37, 19);
+      display.print(hBuf);
+
+      display.setTextColor(SSD1306_WHITE);
+      display.setCursor(62, 19);
+      display.print(":");
+      display.setCursor(71, 19);
+      display.print(mBuf);
     } else {
-      snprintf(alarmFootBuf, sizeof(alarmFootBuf), "Tac:Hr  Knob:Min Clk:%s",
-               alarmEnabled ? "Off" : "On");
+      display.setTextColor(SSD1306_WHITE);
+      display.setCursor(37, 19);
+      display.print(hBuf);
+      display.setCursor(62, 19);
+      display.print(":");
+
+      display.fillRoundRect(68, 17, 26, 17, 3, SSD1306_WHITE);
+      display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+      display.setCursor(71, 19);
+      display.print(mBuf);
     }
-    drawCarouselText(alarmFootBuf, 4, 53, 20, now);
+
+    // 3. Tactile Status Pill (Centered, high-contrast)
+    display.setTextSize(1);
+    if (alarmEnabled) {
+      display.fillRoundRect(37, 37, 54, 11, 2, SSD1306_WHITE);
+      display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+      display.setCursor(46, 39);
+      display.print("ACTIVE");
+    } else {
+      display.drawRoundRect(37, 37, 54, 11, 2, SSD1306_WHITE);
+      display.setTextColor(SSD1306_WHITE);
+      display.setCursor(55, 39);
+      display.print("OFF");
+    }
+
+    // 4. Subtle separator & Clean non-scrolling helper hint
+    display.drawFastHLine(14, 50, 100, SSD1306_WHITE);
+    display.setTextColor(SSD1306_WHITE);
+    if (currentAlarmField == EDIT_HOURS) {
+      display.setCursor(11, 53);
+      display.print("Dial Hour");
+      display.drawPixel(69, 56, SSD1306_WHITE);
+      display.setCursor(74, 53);
+      display.print("Tap:Min");
+    } else {
+      display.setCursor(10, 53);
+      display.print("Dial Min");
+      display.drawPixel(64, 56, SSD1306_WHITE);
+      display.setCursor(70, 53);
+      display.print("Tap:Hour");
+    }
   }
 }
 
