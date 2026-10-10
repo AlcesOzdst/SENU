@@ -11,7 +11,20 @@ venv/
 # PlatformIO
 .pio/
 .vscode/
+compile_commands.json
 
 # OS/editor
 .DS_Store
 .idea/
+
+# Private Reference Documents & Notes
+docs/LOGBOOK.md
+*.pdf
+
+# Private Hardware & Network Configuration
+firmware/include/config.h
+
+# Cloned Submodule / Scratch Repos
+animotion_repo/
+
+
