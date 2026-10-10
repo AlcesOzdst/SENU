@@ -1,3 +1,4 @@
+#include "../include/config.h"
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Arduino.h>
@@ -6,8 +7,8 @@
 #include <RTClib.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
-#include <Wire.h>
-#include "config.h"
+#include <esp_wifi.h>
+
 
 // ==========================================
 // PIN DEFINITIONS FOR ESP32-C3 SUPERMINI
@@ -22,14 +23,16 @@ constexpr int ENCODER_DT_PIN = 1;  // Quadrature B
 constexpr int ENCODER_SW_PIN = 3;  // Encoder built-in push switch (Active LOW)
 
 // Experimental Hardware Pins (Branch: experiments)
-constexpr int BUZZER_PIN = 6;      // Piezo/Active Buzzer Output (Pin 10 on right header)
-constexpr int PAUSE_BTN_PIN = 7;   // External Tactile Push Button (Active LOW, Pin 11 on right header)
+constexpr int BUZZER_PIN =
+    6; // Piezo/Active Buzzer Output (Pin 10 on right header)
+constexpr int PAUSE_BTN_PIN =
+    7; // External Tactile Push Button (Active LOW, Pin 11 on right header)
 
 // Display Calibrated Geometry (New 128x64 OLED Panel)
 constexpr int SCREEN_WIDTH = 128;
 constexpr int SCREEN_HEIGHT = 64;
-constexpr int SCREEN_Y_OFFSET = 0;   // Full 128x64 active panel (Y = 0..63)
-constexpr int USABLE_HEIGHT = 64;    // Full 64px display canvas
+constexpr int SCREEN_Y_OFFSET = 0; // Full 128x64 active panel (Y = 0..63)
+constexpr int USABLE_HEIGHT = 64;  // Full 64px display canvas
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 RTC_DS3231 rtc;
@@ -49,27 +52,40 @@ enum ScreenState {
 
 ScreenState currentScreen = SCREEN_MENU;
 
-const char *menuItems[] = {
-  "1. Focus Timer",
-  "2. Alarm Setup",
-  "3. PC Metrics",
-  "4. Tasks (Sync)"
-};
+const char *menuItems[] = {"1. Focus Timer", "2. Alarm Setup", "3. PC Metrics",
+                           "4. Tasks (Sync)"};
 constexpr int TOTAL_MENU_ITEMS = sizeof(menuItems) / sizeof(menuItems[0]);
 int selectedMenuIndex = 0;
 
-// Focus Timer State (Supports 1-minute sessions & Pomodoro phases!)
-enum PomodoroPhase : uint8_t {
-  PHASE_FOCUS,
-  PHASE_BREAK
+// ==========================================
+// RETRO CAT POMODORO STATE & ASSETS
+// ==========================================
+enum PomoScreen : uint8_t {
+  POMO_SCREEN_FOCUS,
+  POMO_SCREEN_PAUSE,
+  POMO_SCREEN_BREAK,
+  POMO_SCREEN_COMPLETE
 };
-PomodoroPhase pomoPhase = PHASE_FOCUS;
-constexpr uint8_t BREAK_MINUTES = 5;
+PomoScreen pomoScreen = POMO_SCREEN_FOCUS;
+
+enum PomoSession : uint8_t {
+  POMO_SESS_FOCUS,
+  POMO_SESS_SHORT_BREAK,
+  POMO_SESS_LONG_BREAK
+};
+PomoSession pomoSession = POMO_SESS_FOCUS;
+
+uint8_t focusMinutes = 25;
+uint8_t shortBreakMinutes = 5;
+uint8_t longBreakMinutes = 15;
+uint8_t completedSessions = 0;
+uint8_t totalSessions = 0;
+uint8_t pauseIndex = 0; // 0: RESUME, 1: RESET, 2: MENU
 
 bool timerRunning = false;
-int focusMinutes = 25; // Dialable from 1 min to 90 min
 uint32_t timerEndEpoch = 0;
 uint32_t timerRemainingSeconds = 25 * 60;
+uint32_t pomoCompleteStartTime = 0;
 
 // Alarm State (Dialable to any minute, default 06:00 AM)
 int alarmHour = 6;
@@ -79,10 +95,7 @@ bool alarmTriggered = false;
 unsigned long alarmTriggerStartTime = 0;
 
 // Alarm Field Selection (Toggled via Tactile Button)
-enum AlarmEditField {
-  EDIT_HOURS,
-  EDIT_MINUTES
-};
+enum AlarmEditField { EDIT_HOURS, EDIT_MINUTES };
 AlarmEditField currentAlarmField = EDIT_HOURS;
 
 // Snooze Management
@@ -118,12 +131,14 @@ TaskHandle_t netTaskHandle = NULL;
 int metricsCarouselPage = 0; // 0: Live Gauges, 1: Network & Agent Telemetry
 constexpr int TOTAL_METRICS_PAGES = 2;
 
-// Sanitizes non-ASCII characters (e.g. Unicode curly apostrophe ’ -> ') for standard SSD1306 font
+// Sanitizes non-ASCII characters (e.g. Unicode curly apostrophe ’ -> ') for
+// standard SSD1306 font
 String sanitizeAscii(const String &in) {
   String out = "";
   for (size_t i = 0; i < in.length(); i++) {
     uint8_t c = (uint8_t)in[i];
-    if (c == 0xE2 && i + 2 < in.length() && (uint8_t)in[i + 1] == 0x80 && (uint8_t)in[i + 2] == 0x99) {
+    if (c == 0xE2 && i + 2 < in.length() && (uint8_t)in[i + 1] == 0x80 &&
+        (uint8_t)in[i + 2] == 0x99) {
       out += '\'';
       i += 2;
     } else if (c >= 32 && c <= 126) {
@@ -138,7 +153,8 @@ String sanitizeAscii(const String &in) {
 }
 
 // Carousel / Marquee text renderer for strings exceeding display margins
-void drawCarouselText(const String &rawText, int x, int y, int maxChars, unsigned long now) {
+void drawCarouselText(const String &rawText, int x, int y, int maxChars,
+                      unsigned long now) {
   String text = sanitizeAscii(rawText);
   display.setCursor(x, y);
   int len = text.length();
@@ -159,14 +175,47 @@ void drawCarouselText(const String &rawText, int x, int y, int maxChars, unsigne
   } else {
     offset = (cycleTicks - 1 - phase) - (holdTicks / 2);
   }
-  if (offset < 0) offset = 0;
-  if (offset > overflow) offset = overflow;
+  if (offset < 0)
+    offset = 0;
+  if (offset > overflow)
+    offset = overflow;
   display.print(text.substring(offset, offset + maxChars));
 }
 
+void startWifiConnection(const char *ssid, const char *pass) {
+  WiFi.disconnect();
+  // Pass connect = false so we can set WPA3 SAE PWE parameters before handshake
+  WiFi.begin(ssid, pass, 0, NULL, false);
+  wifi_config_t conf;
+  if (esp_wifi_get_config(WIFI_IF_STA, &conf) == ESP_OK) {
+    conf.sta.sae_pwe_h2e = WPA3_SAE_PWE_HUNT_AND_PECK;
+    conf.sta.pmf_cfg.capable = true;
+    conf.sta.pmf_cfg.required = true;
+    esp_wifi_set_config(WIFI_IF_STA, &conf);
+  }
+  esp_wifi_connect();
+}
+
 void networkTask(void *pvParameters) {
+  WiFi.persistent(false);
+  WiFi.disconnect(true);
+  vTaskDelay(pdMS_TO_TICKS(100));
   WiFi.mode(WIFI_STA);
-  WiFi.begin(wifiSsid, wifiPass);
+  WiFi.setAutoReconnect(true);
+
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+    if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+      Serial.printf("[NET-EVENT] Disconnected. Reason code: %d\n",
+                    info.wifi_sta_disconnected.reason);
+    } else if (event == ARDUINO_EVENT_WIFI_STA_CONNECTED) {
+      Serial.println("[NET-EVENT] Associated with AP!");
+    } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+      Serial.printf("[NET-EVENT] Got IP: %s\n",
+                    IPAddress(info.got_ip.ip_info.ip.addr).toString().c_str());
+    }
+  });
+
+  startWifiConnection(wifiSsid, wifiPass);
   netStatus = NET_CONNECTING;
   Serial.printf("[NET] Connecting to Wi-Fi SSID: '%s'...\n", wifiSsid);
 
@@ -186,7 +235,8 @@ void networkTask(void *pvParameters) {
       }
 
       char url[128];
-      snprintf(url, sizeof(url), "http://%s:%d/metrics/system", agentHost, agentPort);
+      snprintf(url, sizeof(url), "http://%s:%d/metrics/system", agentHost,
+               agentPort);
       http.begin(client, url);
 
       int httpCode = http.GET();
@@ -205,7 +255,8 @@ void networkTask(void *pvParameters) {
         }
       } else {
         if (netStatus != NET_AGENT_OFFLINE) {
-          Serial.printf("[NET] Agent offline or returned HTTP %d at %s\n", httpCode, url);
+          Serial.printf("[NET] Agent offline or returned HTTP %d at %s\n",
+                        httpCode, url);
         }
         netStatus = NET_AGENT_OFFLINE;
         displayNeedsUpdate = true;
@@ -216,12 +267,14 @@ void networkTask(void *pvParameters) {
       if (nowTick - lastReconnectAttempt > 8000) {
         lastReconnectAttempt = nowTick;
         int wStatus = WiFi.status();
-        Serial.printf("[NET] Reconnecting to Wi-Fi '%s'... (Status code: %d)\n", wifiSsid, wStatus);
+        Serial.printf("[NET] Reconnecting to Wi-Fi '%s'... (Status code: %d)\n",
+                      wifiSsid, wStatus);
         if (wStatus == 1) { // 1 = WL_NO_SSID_AVAIL
-          Serial.println("[NET] Note: SSID not found. If using iPhone Hotspot, ensure 'Maximize Compatibility' is ON (enables 2.4 GHz radio)!");
+          Serial.println(
+              "[NET] Note: SSID not found. If using iPhone Hotspot, ensure "
+              "'Maximize Compatibility' is ON (enables 2.4 GHz radio)!");
         }
-        WiFi.disconnect();
-        WiFi.begin(wifiSsid, wifiPass);
+        startWifiConnection(wifiSsid, wifiPass);
         netStatus = NET_CONNECTING;
         displayNeedsUpdate = true;
       }
@@ -241,26 +294,26 @@ void networkTask(void *pvParameters) {
 // ==========================================
 // HARRY POTTER / HEDWIG'S THEME (Melody Engine)
 // ==========================================
-#define NOTE_AS4  466
-#define NOTE_B4   494
-#define NOTE_C5   523
-#define NOTE_CS5  554
-#define NOTE_D5   587
-#define NOTE_DS5  622
-#define NOTE_E5   659
-#define NOTE_F5   698
-#define NOTE_FS5  740
-#define NOTE_G5   784
-#define NOTE_GS5  831
-#define NOTE_A5   880
-#define NOTE_AS5  932
-#define NOTE_B5   988
-#define NOTE_C6  1047
+#define NOTE_AS4 466
+#define NOTE_B4 494
+#define NOTE_C5 523
+#define NOTE_CS5 554
+#define NOTE_D5 587
+#define NOTE_DS5 622
+#define NOTE_E5 659
+#define NOTE_F5 698
+#define NOTE_FS5 740
+#define NOTE_G5 784
+#define NOTE_GS5 831
+#define NOTE_A5 880
+#define NOTE_AS5 932
+#define NOTE_B5 988
+#define NOTE_C6 1047
 #define NOTE_CS6 1109
-#define NOTE_D6  1175
+#define NOTE_D6 1175
 #define NOTE_DS6 1245
-#define NOTE_E6  1319
-#define REST        0
+#define NOTE_E6 1319
+#define REST 0
 
 struct NoteStep {
   uint16_t freq;
@@ -270,44 +323,43 @@ struct NoteStep {
 
 // Iconic Hedwig's Theme (Harry Potter main motif)
 const NoteStep hedwigTheme[] = {
-  // Opening motif
-  {NOTE_B4,  350,  60},
-  {NOTE_E5,  520,  60},
-  {NOTE_G5,  200,  60},
-  {NOTE_FS5, 350,  60},
-  {NOTE_E5,  700,  60},
-  {NOTE_B5,  350,  60},
-  {NOTE_A5,  850, 100},
-  {NOTE_FS5, 850, 100},
+    // Opening motif
+    {NOTE_B4, 350, 60},
+    {NOTE_E5, 520, 60},
+    {NOTE_G5, 200, 60},
+    {NOTE_FS5, 350, 60},
+    {NOTE_E5, 700, 60},
+    {NOTE_B5, 350, 60},
+    {NOTE_A5, 850, 100},
+    {NOTE_FS5, 850, 100},
 
-  // Second phrase
-  {NOTE_E5,  520,  60},
-  {NOTE_G5,  200,  60},
-  {NOTE_FS5, 350,  60},
-  {NOTE_DS5, 700,  60},
-  {NOTE_F5,  350,  60},
-  {NOTE_B4, 1000, 150},
+    // Second phrase
+    {NOTE_E5, 520, 60},
+    {NOTE_G5, 200, 60},
+    {NOTE_FS5, 350, 60},
+    {NOTE_DS5, 700, 60},
+    {NOTE_F5, 350, 60},
+    {NOTE_B4, 1000, 150},
 
-  // Third phrase
-  {NOTE_B4,  350,  60},
-  {NOTE_E5,  520,  60},
-  {NOTE_G5,  200,  60},
-  {NOTE_FS5, 350,  60},
-  {NOTE_E5,  700,  60},
-  {NOTE_B5,  350,  60},
-  {NOTE_D6,  700,  60},
-  {NOTE_CS6, 350,  60},
-  {NOTE_C6,  700,  60},
-  {NOTE_GS5, 350,  60},
+    // Third phrase
+    {NOTE_B4, 350, 60},
+    {NOTE_E5, 520, 60},
+    {NOTE_G5, 200, 60},
+    {NOTE_FS5, 350, 60},
+    {NOTE_E5, 700, 60},
+    {NOTE_B5, 350, 60},
+    {NOTE_D6, 700, 60},
+    {NOTE_CS6, 350, 60},
+    {NOTE_C6, 700, 60},
+    {NOTE_GS5, 350, 60},
 
-  // Fourth phrase (cadence)
-  {NOTE_C6,  520,  60},
-  {NOTE_B5,  200,  60},
-  {NOTE_AS5, 350,  60},
-  {NOTE_AS4, 700,  60},
-  {NOTE_G5,  350,  60},
-  {NOTE_E5, 1100, 400}
-};
+    // Fourth phrase (cadence)
+    {NOTE_C6, 520, 60},
+    {NOTE_B5, 200, 60},
+    {NOTE_AS5, 350, 60},
+    {NOTE_AS4, 700, 60},
+    {NOTE_G5, 350, 60},
+    {NOTE_E5, 1100, 400}};
 constexpr int HEDWIG_MELODY_LEN = sizeof(hedwigTheme) / sizeof(hedwigTheme[0]);
 
 int melodyNoteIndex = 0;
@@ -366,9 +418,8 @@ void updateMelodyPlayer(unsigned long now) {
   }
 }
 
-void soundShortChirp() {
-  tone(BUZZER_PIN, 1800, 20);
-}
+void soundShortChirp() { tone(BUZZER_PIN, 1800, 20); }
+void drawBoot(uint32_t now);
 
 void setup() {
   pinMode(ONBOARD_LED_PIN, OUTPUT);
@@ -389,7 +440,9 @@ void setup() {
   Serial.println("\n[BOOT] SENU ESP32-C3 Starting (experiments branch)...");
   Serial.printf("[ALARM] Initialized for %02d:%02d\n", alarmHour, alarmMinute);
   Serial.println("[PINS] Buzzer -> GPIO 6 | Tactile Push Button -> GPIO 7");
-  Serial.printf("[PINS] GPIO 7 level at boot: %d (1 = Open/HIGH, 0 = Pressed/LOW)\n", digitalRead(PAUSE_BTN_PIN));
+  Serial.printf(
+      "[PINS] GPIO 7 level at boot: %d (1 = Open/HIGH, 0 = Pressed/LOW)\n",
+      digitalRead(PAUSE_BTN_PIN));
 
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   Wire.setClock(400000);
@@ -400,21 +453,25 @@ void setup() {
   }
 
   display.clearDisplay();
-  display.setTextWrap(false); // Disable auto-wrap so lines never collide vertically
+  display.setTextWrap(
+      false); // Disable auto-wrap so lines never collide vertically
   display.display();
 
   // Initialize DS3231 RTC
   if (rtc.begin()) {
     rtcFound = true;
     Serial.println("[RTC] DS3231 detected successfully!");
-    
+
     // Automatically sync RTC to your PC's exact time whenever uploaded!
-    DateTime compileTime = DateTime(F(__DATE__), F(__TIME__)) + TimeSpan(0, 0, 0, 5);
+    DateTime compileTime =
+        DateTime(F(__DATE__), F(__TIME__)) + TimeSpan(0, 0, 0, 5);
     rtc.adjust(compileTime);
     Serial.printf("[RTC] Synced RTC to PC clock: %02d:%02d:%02d\n",
-                  compileTime.hour(), compileTime.minute(), compileTime.second());
+                  compileTime.hour(), compileTime.minute(),
+                  compileTime.second());
   } else {
-    Serial.println("[RTC] Warning: DS3231 not found on I2C bus (offline fallback).");
+    Serial.println(
+        "[RTC] Warning: DS3231 not found on I2C bus (offline fallback).");
   }
 
   // Launch Background Network Task for Wi-Fi & PC Metrics (FreeRTOS)
@@ -423,6 +480,18 @@ void setup() {
 
   // Startup confirmation chirp
   soundShortChirp();
+
+  // Show Retro Cat Boot Splash
+  unsigned long bootStart = millis();
+  while (millis() - bootStart < 1600) {
+    display.clearDisplay();
+    drawBoot(millis());
+    display.display();
+    delay(40);
+    if (digitalRead(ENCODER_SW_PIN) == LOW || digitalRead(PAUSE_BTN_PIN) == LOW) {
+      break;
+    }
+  }
 }
 
 void renderMenu() {
@@ -442,7 +511,8 @@ void renderMenu() {
   }
 
   if (rtcFound) {
-    display.printf("%02d:%02d:%02d", cachedNow.hour(), cachedNow.minute(), cachedNow.second());
+    display.printf("%02d:%02d:%02d", cachedNow.hour(), cachedNow.minute(),
+                   cachedNow.second());
   } else {
     display.print("SENU MENU");
   }
@@ -457,7 +527,9 @@ void renderMenu() {
   if (netStatus == NET_AGENT_ONLINE) {
     display.fillCircle(123, 6, 2, SSD1306_WHITE); // Solid dot: Agent Online
   } else if (WiFi.status() == WL_CONNECTED) {
-    display.drawCircle(123, 6, 2, SSD1306_WHITE); // Hollow circle: Wi-Fi connected, agent offline
+    display.drawCircle(
+        123, 6, 2,
+        SSD1306_WHITE); // Hollow circle: Wi-Fi connected, agent offline
   }
 
   display.drawLine(2, 12, 125, 12, SSD1306_WHITE);
@@ -483,143 +555,322 @@ void renderMenu() {
   display.fillRect(124, scrollY, 2, 11, SSD1306_WHITE);
 }
 
-// ---------- Sleepy Cat Graphics & Micro-Animations ----------
-void drawCat(unsigned long now, uint32_t leftSec) {
-  // The cat blinks every few seconds
-  unsigned long blinkCycle = now % 4200UL;
-  bool blink = blinkCycle < 160UL;
+// =====================================================
+// RETRO CAT POMODORO GRAPHICS & SCENE ENGINE
+// =====================================================
 
-  // During final minute of focus or during break time, cat gets sleepy
-  bool sleepy = (pomoPhase == PHASE_FOCUS && leftSec <= 60 && timerRunning) || (pomoPhase == PHASE_BREAK && timerRunning);
-
-  // Tail
-  display.drawLine(48, 45, 54, 42, SSD1306_WHITE);
-  display.drawLine(54, 42, 58, 35, SSD1306_WHITE);
-  display.drawLine(58, 35, 55, 32, SSD1306_WHITE);
-
-  // Ears
-  display.drawLine(12, 23, 15, 9, SSD1306_WHITE);
-  display.drawLine(15, 9, 26, 19, SSD1306_WHITE);
-
-  display.drawLine(34, 19, 45, 9, SSD1306_WHITE);
-  display.drawLine(45, 9, 48, 23, SSD1306_WHITE);
-
-  // Head
-  display.drawRoundRect(11, 17, 38, 34, 11, SSD1306_WHITE);
-
-  // Cheeks
-  display.drawPixel(16, 34, SSD1306_WHITE);
-  display.drawPixel(43, 34, SSD1306_WHITE);
-
-  // Eyes
-  if (alarmTriggered) {
-    // Alert wide eyes when time is up
-    display.drawCircle(21, 29, 3, SSD1306_WHITE);
-    display.drawCircle(39, 29, 3, SSD1306_WHITE);
-    display.fillCircle(21, 29, 1, SSD1306_WHITE);
-    display.fillCircle(39, 29, 1, SSD1306_WHITE);
-  } else if (blink || sleepy) {
-    display.drawLine(18, 29, 24, 29, SSD1306_WHITE);
-    display.drawLine(36, 29, 42, 29, SSD1306_WHITE);
-  } else {
-    display.fillCircle(21, 29, 2, SSD1306_WHITE);
-    display.fillCircle(39, 29, 2, SSD1306_WHITE);
-  }
-
-  // Nose and mouth
-  display.fillTriangle(28, 34, 32, 34, 30, 37, SSD1306_WHITE);
-  display.drawLine(30, 37, 27, 39, SSD1306_WHITE);
-  display.drawLine(30, 37, 33, 39, SSD1306_WHITE);
-
-  // Whiskers
-  display.drawLine(17, 37, 7, 35, SSD1306_WHITE);
-  display.drawLine(18, 40, 8, 41, SSD1306_WHITE);
-  display.drawLine(43, 37, 53, 35, SSD1306_WHITE);
-  display.drawLine(42, 40, 52, 41, SSD1306_WHITE);
-
-  // Little floating Zs when sleepy
-  if (sleepy && !alarmTriggered) {
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(47, 7);
-    display.print("z");
-    display.setCursor(54, 3);
-    display.print("Z");
-  }
-
-  // Tiny paws
-  display.drawLine(18, 51, 18, 54, SSD1306_WHITE);
-  display.drawLine(40, 51, 40, 54, SSD1306_WHITE);
+void textAt(int x, int y, const char *str, uint8_t size = 1) {
+  display.setTextSize(size);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(x, y);
+  display.print(str);
 }
 
-void renderFocusTimer() {
-  display.drawRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SSD1306_WHITE);
-
-  unsigned long now = millis();
-
-  // Header Title on Left (Y = 3)
+void centeredText(int y, const char *str) {
+  int16_t x1, y1;
+  uint16_t tw, th;
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(4, 3);
-  if (alarmTriggered) {
-    display.print("MEOW: TIME UP!");
-  } else if (pomoPhase == PHASE_FOCUS) {
-    display.print("FOCUS TIME");
-  } else {
-    display.print("BREAK TIME");
+  display.getTextBounds(str, 0, y, &x1, &y1, &tw, &th);
+  display.setCursor((SCREEN_WIDTH - tw) / 2, y);
+  display.print(str);
+}
+
+void stars(uint8_t count, uint32_t now) {
+  for (uint8_t i = 0; i < count; i++) {
+    int x = 9 + ((i * 31 + 7) % 110);
+    int y = 12 + ((i * 17 + 3) % 37);
+    if (((now / 350) + i) % 3 == 0) {
+      display.drawPixel(x, y, SSD1306_WHITE);
+    } else {
+      display.drawPixel(x, y, SSD1306_WHITE);
+      display.drawPixel(x - 1, y, SSD1306_WHITE);
+      display.drawPixel(x + 1, y, SSD1306_WHITE);
+      display.drawPixel(x, y - 1, SSD1306_WHITE);
+      display.drawPixel(x, y + 1, SSD1306_WHITE);
+    }
   }
+}
 
-  // Right Header Status Badge (X = 80)
-  display.setCursor(80, 3);
-  if (alarmTriggered) {
-    display.print("RING!");
-  } else if (timerRunning) {
-    display.printf("RUN %2dm", (pomoPhase == PHASE_FOCUS) ? focusMinutes : BREAK_MINUTES);
-  } else {
-    display.printf("PAU %2dm", (pomoPhase == PHASE_FOCUS) ? focusMinutes : BREAK_MINUTES);
-  }
+void drawBoot(uint32_t now) {
+  display.drawRoundRect(1, 1, 126, 62, 3, SSD1306_WHITE);
+  centeredText(7, "SENU POMODORO");
+  stars(4, now);
 
-  display.drawLine(2, 12, 125, 12, SSD1306_WHITE);
+  // Large cat peeking up.
+  display.fillRoundRect(37, 28, 54, 30, 7, SSD1306_WHITE);
+  display.fillTriangle(42, 35, 44, 21, 56, 33, SSD1306_WHITE);
+  display.fillTriangle(71, 33, 83, 21, 86, 35, SSD1306_WHITE);
 
-  // Animated Cat on Left (X = 0..58)
-  drawCat(now, timerRemainingSeconds);
+  // Face
+  display.fillRoundRect(43, 31, 42, 25, 8, SSD1306_WHITE);
+  display.fillCircle(54, 42, 3, SSD1306_BLACK);
+  display.fillCircle(73, 42, 3, SSD1306_BLACK);
+  display.drawPixel(63, 46, SSD1306_BLACK);
+  display.drawLine(63, 47, 60, 50, SSD1306_BLACK);
+  display.drawLine(63, 47, 66, 50, SSD1306_BLACK);
 
-  // Right Side: Countdown Digits (X = 62, Y = 18)
-  int mins = timerRemainingSeconds / 60;
-  int secs = timerRemainingSeconds % 60;
+  // Paws on the desk
+  display.fillRoundRect(24, 49, 25, 9, 3, SSD1306_WHITE);
+  display.fillRoundRect(79, 49, 25, 9, 3, SSD1306_WHITE);
+  display.drawFastHLine(8, 53, 112, SSD1306_WHITE);
 
+  centeredText(55, "PRESS TO START");
+}
+
+void drawProgress(uint32_t leftMs, uint32_t totalMs) {
+  display.drawRoundRect(5, 57, 118, 5, 2, SSD1306_WHITE);
+  if (totalMs == 0) return;
+  uint32_t elapsed = totalMs > leftMs ? totalMs - leftMs : 0;
+  int width = (int)((uint64_t)elapsed * 112 / totalMs);
+  if (width > 0)
+    display.fillRect(8, 59, width, 1, SSD1306_WHITE);
+}
+
+void drawCountdown(uint32_t ms, int x, int y) {
+  uint32_t secs = (ms + 999) / 1000;
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%02lu:%02lu",
+           (unsigned long)(secs / 60),
+           (unsigned long)(secs % 60));
   display.setTextSize(2);
-  display.setCursor(62, 18);
-  display.printf("%02d:%02d", mins, secs);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(x, y);
+  display.print(buf);
+}
 
-  // Right Side: Progress Bar (X = 62, Y = 38, W = 60, H = 7)
-  uint32_t totalSec = (pomoPhase == PHASE_FOCUS) ? (focusMinutes * 60) : (BREAK_MINUTES * 60);
-  uint32_t elapsed = (totalSec > timerRemainingSeconds) ? (totalSec - timerRemainingSeconds) : 0;
-  display.drawRect(62, 38, 60, 7, SSD1306_WHITE);
-  if (totalSec > 0) {
-    int fillW = map(elapsed, 0, totalSec, 0, 56);
-    if (fillW > 0) {
-      display.fillRect(64, 40, fillW, 3, SSD1306_WHITE);
+// Compact, hand-drawn multi-pose pixel cat
+void drawCat(int x, int y, uint8_t pose, uint32_t now) {
+  int bob = (pose == 1 && (now / 280) % 2) ? 1 : 0;
+  y += bob;
+
+  // Pose 0: sitting; 1: studying; 2: sleeping; 3: celebrating.
+  if (pose == 3) {
+    // Raised paws
+    display.drawLine(x + 8, y + 22, x + 1, y + 12, SSD1306_WHITE);
+    display.drawLine(x + 1, y + 12, x + 4, y + 9, SSD1306_WHITE);
+    display.drawLine(x + 31, y + 22, x + 39, y + 10, SSD1306_WHITE);
+    display.drawLine(x + 39, y + 10, x + 35, y + 8, SSD1306_WHITE);
+  }
+
+  // Ears
+  display.fillTriangle(x + 5, y + 13, x + 7, y + 1, x + 16, y + 10, SSD1306_WHITE);
+  display.fillTriangle(x + 20, y + 10, x + 29, y + 1, x + 32, y + 13, SSD1306_WHITE);
+
+  // Head
+  display.fillRoundRect(x + 5, y + 9, 27, 22, 7, SSD1306_WHITE);
+
+  // Ears cut out for pixel-art outline
+  display.drawLine(x + 7, y + 9, x + 8, y + 5, SSD1306_BLACK);
+  display.drawLine(x + 8, y + 5, x + 14, y + 10, SSD1306_BLACK);
+  display.drawLine(x + 23, y + 10, x + 29, y + 5, SSD1306_BLACK);
+  display.drawLine(x + 29, y + 5, x + 30, y + 9, SSD1306_BLACK);
+
+  bool asleep = (pose == 2);
+  bool blink = ((now / 3300) % 5 == 0) && ((now % 3300) < 150);
+
+  // Eyes
+  if (asleep || blink) {
+    display.drawLine(x + 10, y + 19, x + 15, y + 19, SSD1306_BLACK);
+    display.drawLine(x + 22, y + 19, x + 27, y + 19, SSD1306_BLACK);
+  } else {
+    display.fillCircle(x + 13, y + 19, 2, SSD1306_BLACK);
+    display.fillCircle(x + 24, y + 19, 2, SSD1306_BLACK);
+  }
+
+  // Nose and smile
+  display.drawPixel(x + 18, y + 22, SSD1306_BLACK);
+  display.drawLine(x + 18, y + 23, x + 15, y + 25, SSD1306_BLACK);
+  display.drawLine(x + 18, y + 23, x + 21, y + 25, SSD1306_BLACK);
+
+  // Whiskers
+  display.drawLine(x + 9, y + 23, x + 2, y + 22, SSD1306_BLACK);
+  display.drawLine(x + 9, y + 26, x + 2, y + 27, SSD1306_BLACK);
+  display.drawLine(x + 27, y + 23, x + 34, y + 22, SSD1306_BLACK);
+  display.drawLine(x + 27, y + 26, x + 34, y + 27, SSD1306_BLACK);
+
+  if (pose != 3) {
+    // Body and paws
+    display.fillRoundRect(x + 9, y + 29, 20, 11, 4, SSD1306_WHITE);
+    display.drawLine(x + 12, y + 37, x + 12, y + 40, SSD1306_BLACK);
+    display.drawLine(x + 25, y + 37, x + 25, y + 40, SSD1306_BLACK);
+
+    // Animated tail
+    if ((now / 400) % 2) {
+      display.drawLine(x + 28, y + 35, x + 35, y + 30, SSD1306_WHITE);
+      display.drawLine(x + 35, y + 30, x + 37, y + 24, SSD1306_WHITE);
+    } else {
+      display.drawLine(x + 28, y + 35, x + 35, y + 34, SSD1306_WHITE);
+      display.drawLine(x + 35, y + 34, x + 37, y + 29, SSD1306_WHITE);
     }
   }
 
-  // Right Side: Status Encouragement / Controls (X = 62, Y = 51)
-  display.setTextSize(1);
-  char statusMsg[32];
-  if (alarmTriggered) {
-    snprintf(statusMsg, sizeof(statusMsg), "Tap:Off Hold:Rst");
-  } else if (!timerRunning) {
-    snprintf(statusMsg, sizeof(statusMsg), "PRESS START");
-  } else if (pomoPhase == PHASE_BREAK) {
-    snprintf(statusMsg, sizeof(statusMsg), "take it easy");
-  } else if (timerRemainingSeconds <= 60) {
-    snprintf(statusMsg, sizeof(statusMsg), "almost there!");
-  } else {
-    snprintf(statusMsg, sizeof(statusMsg), "you got this!");
+  if (asleep) {
+    textAt(x + 31, y - 4, "z");
+    textAt(x + 37, y - 8, "Z");
+  }
+}
+
+void drawPomoFocus(uint32_t now, uint32_t leftMs) {
+  display.drawRoundRect(1, 1, 126, 62, 3, SSD1306_WHITE);
+
+  textAt(6, 5, "FOCUS");
+  char streakBuf[8];
+  snprintf(streakBuf, sizeof(streakBuf), "%d/4", (completedSessions % 4) + 1);
+  textAt(46, 5, streakBuf);
+
+  // Session indicators (dots)
+  for (uint8_t i = 0; i < 4; i++) {
+    int x = 91 + i * 8;
+    if (i < (completedSessions % 4))
+      display.fillCircle(x, 9, 3, SSD1306_WHITE);
+    else
+      display.drawCircle(x, 9, 3, SSD1306_WHITE);
   }
 
-  // Horizontal marquee carousel for status messages
-  drawCarouselText(statusMsg, 62, 51, 10, now);
+  display.drawFastHLine(5, 16, 118, SSD1306_WHITE);
+
+  drawCountdown(leftMs, 59, 19);
+
+  // Desk scene
+  display.drawLine(7, 54, 122, 54, SSD1306_WHITE);
+
+  // Lamp
+  display.drawLine(15, 29, 20, 42, SSD1306_WHITE);
+  display.drawLine(20, 42, 14, 47, SSD1306_WHITE);
+  display.fillTriangle(9, 31, 28, 31, 24, 39, SSD1306_WHITE);
+
+  // Cat studying
+  drawCat(30, 29, 1, now);
+
+  // Laptop
+  display.drawLine(70, 44, 91, 44, SSD1306_WHITE);
+  display.drawLine(74, 32, 91, 32, SSD1306_WHITE);
+  display.drawLine(74, 32, 70, 44, SSD1306_WHITE);
+  display.drawLine(91, 32, 91, 44, SSD1306_WHITE);
+  display.drawLine(68, 46, 94, 46, SSD1306_WHITE);
+
+  // Tiny plant
+  display.drawLine(109, 53, 109, 44, SSD1306_WHITE);
+  display.drawLine(109, 48, 103, 43, SSD1306_WHITE);
+  display.drawLine(109, 46, 115, 39, SSD1306_WHITE);
+  display.drawLine(102, 53, 117, 53, SSD1306_WHITE);
+
+  drawProgress(leftMs, (uint32_t)focusMinutes * 60000UL);
+}
+
+void drawPomoPause(uint32_t now) {
+  display.drawRoundRect(1, 1, 126, 62, 3, SSD1306_WHITE);
+
+  centeredText(7, "PAUSED");
+
+  // Sleeping/resting cat
+  drawCat(9, 27, 2, now);
+
+  const char *options[] = {"RESUME", "RESET", "MENU"};
+
+  for (uint8_t i = 0; i < 3; i++) {
+    int y = 21 + i * 13;
+    if (i == pauseIndex) {
+      display.fillRoundRect(65, y, 57, 12, 2, SSD1306_WHITE);
+      display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+      textAt(69, y + 2, ">");
+      textAt(79, y + 2, options[i]);
+      display.setTextColor(SSD1306_WHITE);
+    } else {
+      textAt(78, y + 2, options[i]);
+    }
+  }
+
+  display.drawFastHLine(5, 56, 118, SSD1306_WHITE);
+}
+
+void drawPomoBreak(uint32_t now, uint32_t leftMs) {
+  display.drawRoundRect(1, 1, 126, 62, 3, SSD1306_WHITE);
+
+  textAt(6, 5, pomoSession == POMO_SESS_LONG_BREAK ? "LONG BRK" : "BREAK");
+
+  for (uint8_t i = 0; i < 4; i++) {
+    int x = 91 + i * 8;
+    if (i < (completedSessions % 4))
+      display.fillCircle(x, 9, 3, SSD1306_WHITE);
+    else
+      display.drawCircle(x, 9, 3, SSD1306_WHITE);
+  }
+
+  display.drawFastHLine(5, 16, 118, SSD1306_WHITE);
+
+  drawCountdown(leftMs, 72, 19);
+
+  // Window
+  display.drawRect(7, 23, 25, 27, SSD1306_WHITE);
+  display.drawFastVLine(19, 23, 27, SSD1306_WHITE);
+  display.drawFastHLine(7, 36, 25, SSD1306_WHITE);
+  display.drawPixel(12, 29, SSD1306_WHITE);
+  display.drawPixel(27, 42, SSD1306_WHITE);
+
+  // Moon
+  display.fillCircle(25, 30, 4, SSD1306_WHITE);
+  display.fillCircle(27, 28, 4, SSD1306_BLACK);
+
+  // Napping cat on the desk
+  display.drawFastHLine(5, 54, 118, SSD1306_WHITE);
+  drawCat(34, 31, 2, now);
+
+  // Small potted plant
+  display.drawLine(109, 53, 109, 43, SSD1306_WHITE);
+  display.drawLine(109, 48, 103, 43, SSD1306_WHITE);
+  display.drawLine(109, 46, 115, 40, SSD1306_WHITE);
+  display.drawLine(102, 53, 117, 53, SSD1306_WHITE);
+
+  uint32_t totalMs = (uint32_t)(pomoSession == POMO_SESS_LONG_BREAK ? longBreakMinutes : shortBreakMinutes) * 60000UL;
+  drawProgress(leftMs, totalMs);
+}
+
+void drawPomoComplete(uint32_t now) {
+  display.drawRoundRect(1, 1, 126, 62, 3, SSD1306_WHITE);
+
+  stars(10, now);
+
+  centeredText(8, "WELL DONE!");
+
+  // Happy jumping cat
+  int bounce = ((now - pomoCompleteStartTime) / 120) % 2 ? 2 : 0;
+  drawCat(45, 21 - bounce, 3, now);
+
+  // Celebration sparkles
+  for (int i = 0; i < 4; i++) {
+    int x = 17 + i * 31;
+    int y = 27 + ((i % 2) * 10);
+    display.drawPixel(x, y, SSD1306_WHITE);
+    display.drawPixel(x - 1, y, SSD1306_WHITE);
+    display.drawPixel(x + 1, y, SSD1306_WHITE);
+    display.drawPixel(x, y - 1, SSD1306_WHITE);
+    display.drawPixel(x, y + 1, SSD1306_WHITE);
+  }
+
+  display.drawRoundRect(5, 57, 118, 5, 2, SSD1306_WHITE);
+  display.fillRect(8, 59, 112, 1, SSD1306_WHITE);
+}
+
+void renderFocusTimer() {
+  uint32_t now = millis();
+  uint32_t leftMs = timerRemainingSeconds * 1000UL;
+
+  switch (pomoScreen) {
+  case POMO_SCREEN_FOCUS:
+    drawPomoFocus(now, leftMs);
+    break;
+  case POMO_SCREEN_PAUSE:
+    drawPomoPause(now);
+    break;
+  case POMO_SCREEN_BREAK:
+    drawPomoBreak(now, leftMs);
+    break;
+  case POMO_SCREEN_COMPLETE:
+    drawPomoComplete(now);
+    break;
+  }
 }
 
 void renderAlarmScreen() {
@@ -663,14 +914,17 @@ void renderAlarmScreen() {
 
     display.setTextSize(1);
     char alarmStatusBuf[32];
-    snprintf(alarmStatusBuf, sizeof(alarmStatusBuf), "Status: %s (Hedwig)", alarmEnabled ? "ACTIVE" : "OFF");
+    snprintf(alarmStatusBuf, sizeof(alarmStatusBuf), "Status: %s (Hedwig)",
+             alarmEnabled ? "ACTIVE" : "OFF");
     drawCarouselText(alarmStatusBuf, 8, 39, 19, now);
 
     char alarmFootBuf[32];
     if (currentAlarmField == EDIT_HOURS) {
-      snprintf(alarmFootBuf, sizeof(alarmFootBuf), "Tac:Min Knob:Hr Clk:%s", alarmEnabled ? "Off" : "On");
+      snprintf(alarmFootBuf, sizeof(alarmFootBuf), "Tac:Min Knob:Hr Clk:%s",
+               alarmEnabled ? "Off" : "On");
     } else {
-      snprintf(alarmFootBuf, sizeof(alarmFootBuf), "Tac:Hr  Knob:Min Clk:%s", alarmEnabled ? "Off" : "On");
+      snprintf(alarmFootBuf, sizeof(alarmFootBuf), "Tac:Hr  Knob:Min Clk:%s",
+               alarmEnabled ? "Off" : "On");
     }
     drawCarouselText(alarmFootBuf, 4, 53, 20, now);
   }
@@ -682,7 +936,8 @@ void renderPCMetrics() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
 
-  // Status Header: Title on Left, Carousel Slide Indicator on Right (No overlap!)
+  // Status Header: Title on Left, Carousel Slide Indicator on Right (No
+  // overlap!)
   display.setCursor(4, 3);
   if (netStatus == NET_AGENT_ONLINE) {
     display.print("PC METRICS [OK]");
@@ -751,7 +1006,8 @@ void renderPCMetrics() {
 
     if (WiFi.status() == WL_CONNECTED) {
       char ipBuf[40];
-      snprintf(ipBuf, sizeof(ipBuf), "IP: %s (%ddBm)", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+      snprintf(ipBuf, sizeof(ipBuf), "IP: %s (%ddBm)",
+               WiFi.localIP().toString().c_str(), WiFi.RSSI());
       drawCarouselText(ipBuf, 4, 29, 20, now);
     } else {
       drawCarouselText("WiFi: CONNECTING...", 4, 29, 20, now);
@@ -798,12 +1054,8 @@ void loop() {
   static bool ledState = false;
 
   // 16-State Quadrature Transition Table
-  static const int8_t qeTable[16] = {
-      0,  -1,  1,  0,
-      1,   0,  0, -1,
-     -1,   0,  0,  1,
-      0,   1, -1,  0
-  };
+  static const int8_t qeTable[16] = {0,  -1, 1, 0, 1, 0, 0,  -1,
+                                     -1, 0,  0, 1, 0, 1, -1, 0};
   static uint8_t encoderHistory = 0;
   static int8_t accumulatedSteps = 0;
 
@@ -825,7 +1077,9 @@ void loop() {
         if (rtcFound) {
           DateTime cur = rtc.now();
           rtc.adjust(DateTime(cur.year(), cur.month(), cur.day(), h, m, s));
-          Serial.printf("[RTC] Clock successfully adjusted to %02d:%02d:%02d!\n", h, m, s);
+          Serial.printf(
+              "[RTC] Clock successfully adjusted to %02d:%02d:%02d!\n", h, m,
+              s);
           displayNeedsUpdate = true;
         }
       } else {
@@ -833,27 +1087,45 @@ void loop() {
       }
     } else if (line.equalsIgnoreCase("SYNC")) {
       if (rtcFound) {
-        DateTime compileTime = DateTime(F(__DATE__), F(__TIME__)) + TimeSpan(0, 0, 0, 6);
+        DateTime compileTime =
+            DateTime(F(__DATE__), F(__TIME__)) + TimeSpan(0, 0, 0, 6);
         rtc.adjust(compileTime);
-        Serial.printf("[RTC] Synced to build time: %02d:%02d:%02d\n", compileTime.hour(), compileTime.minute(), compileTime.second());
+        Serial.printf("[RTC] Synced to build time: %02d:%02d:%02d\n",
+                      compileTime.hour(), compileTime.minute(),
+                      compileTime.second());
         displayNeedsUpdate = true;
       }
     } else if (line.startsWith("WIFI ") || line.startsWith("wifi ")) {
-      // Format: WIFI <SSID> <PASSWORD>
-      int firstSpace = line.indexOf(' ');
-      int secondSpace = line.indexOf(' ', firstSpace + 1);
-      if (secondSpace > firstSpace) {
-        String newSsid = line.substring(firstSpace + 1, secondSpace);
-        String newPass = line.substring(secondSpace + 1);
+      // Support WIFI "<SSID>" <PASSWORD> or WIFI <SSID> <PASSWORD>
+      String rest = line.substring(5);
+      rest.trim();
+      String newSsid = "";
+      String newPass = "";
+      if (rest.startsWith("\"")) {
+        int quoteEnd = rest.indexOf('"', 1);
+        if (quoteEnd > 1) {
+          newSsid = rest.substring(1, quoteEnd);
+          newPass = rest.substring(quoteEnd + 1);
+          newPass.trim();
+        }
+      } else {
+        int lastSpace = rest.lastIndexOf(' ');
+        if (lastSpace > 0) {
+          newSsid = rest.substring(0, lastSpace);
+          newPass = rest.substring(lastSpace + 1);
+        }
+      }
+      newSsid.trim();
+      newPass.trim();
+      if (newSsid.length() > 0 && newPass.length() > 0) {
         strncpy(wifiSsid, newSsid.c_str(), sizeof(wifiSsid) - 1);
         strncpy(wifiPass, newPass.c_str(), sizeof(wifiPass) - 1);
         Serial.printf("[NET] Updated Wi-Fi credentials: SSID='%s'\n", wifiSsid);
-        WiFi.disconnect();
-        WiFi.begin(wifiSsid, wifiPass);
+        startWifiConnection(wifiSsid, wifiPass);
         netStatus = NET_CONNECTING;
         displayNeedsUpdate = true;
       } else {
-        Serial.println("[NET] Format error! Use: WIFI <ssid> <password>");
+        Serial.println("[NET] Format error! Use: WIFI <ssid> <password> or WIFI \"<ssid>\" <password>");
       }
     } else if (line.startsWith("HOST ") || line.startsWith("host ")) {
       // Format: HOST <IP>
@@ -861,22 +1133,32 @@ void loop() {
       String hostStr = line.substring(firstSpace + 1);
       hostStr.trim();
       strncpy(agentHost, hostStr.c_str(), sizeof(agentHost) - 1);
-      Serial.printf("[NET] Updated Agent Host to: %s:%d\n", agentHost, agentPort);
+      Serial.printf("[NET] Updated Agent Host to: %s:%d\n", agentHost,
+                    agentPort);
       netForceRefresh = true;
       displayNeedsUpdate = true;
     } else if (line.equalsIgnoreCase("STATUS")) {
       Serial.println("================ SENU STATUS ================");
       if (rtcFound) {
         DateTime cur = rtc.now();
-        Serial.printf("RTC Time: %02d:%02d:%02d (%04d-%02d-%02d)\n", cur.hour(), cur.minute(), cur.second(), cur.year(), cur.month(), cur.day());
+        Serial.printf("RTC Time: %02d:%02d:%02d (%04d-%02d-%02d)\n", cur.hour(),
+                      cur.minute(), cur.second(), cur.year(), cur.month(),
+                      cur.day());
       }
-      Serial.printf("Wi-Fi Status: %s | SSID: %s\n", (WiFi.status() == WL_CONNECTED ? "CONNECTED" : "DISCONNECTED"), wifiSsid);
+      Serial.printf(
+          "Wi-Fi Status: %s | SSID: %s\n",
+          (WiFi.status() == WL_CONNECTED ? "CONNECTED" : "DISCONNECTED"),
+          wifiSsid);
       if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("ESP32 IP: %s | RSSI: %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+        Serial.printf("ESP32 IP: %s | RSSI: %d dBm\n",
+                      WiFi.localIP().toString().c_str(), WiFi.RSSI());
       }
-      Serial.printf("Desktop Agent: http://%s:%d/metrics/system\n", agentHost, agentPort);
-      Serial.printf("Agent Status: %s\n", (netStatus == NET_AGENT_ONLINE ? "ONLINE" : "OFFLINE"));
-      Serial.printf("CPU: %.1f%% | RAM: %.1f%%\n", pcCpuPercent, pcMemoryPercent);
+      Serial.printf("Desktop Agent: http://%s:%d/metrics/system\n", agentHost,
+                    agentPort);
+      Serial.printf("Agent Status: %s\n",
+                    (netStatus == NET_AGENT_ONLINE ? "ONLINE" : "OFFLINE"));
+      Serial.printf("CPU: %.1f%% | RAM: %.1f%%\n", pcCpuPercent,
+                    pcMemoryPercent);
       Serial.println("=============================================");
     }
   }
@@ -896,13 +1178,16 @@ void loop() {
 
     // Check if current time matches scheduled alarm
     if (alarmEnabled && !alarmTriggered) {
-      if (currentTime.hour() == alarmHour && currentTime.minute() == alarmMinute && currentTime.second() == 0) {
+      if (currentTime.hour() == alarmHour &&
+          currentTime.minute() == alarmMinute && currentTime.second() == 0) {
         alarmTriggered = true;
         snoozeActive = false;
         alarmTriggerStartTime = now;
         currentScreen = SCREEN_ALARM;
         displayNeedsUpdate = true;
-        Serial.printf("[ALARM] >>> HARRY POTTER THEME ALARM TRIGGERED at %02d:%02d! <<<\n", alarmHour, alarmMinute);
+        Serial.printf("[ALARM] >>> HARRY POTTER THEME ALARM TRIGGERED at "
+                      "%02d:%02d! <<<\n",
+                      alarmHour, alarmMinute);
       }
     }
 
@@ -925,17 +1210,21 @@ void loop() {
         timerRunning = false;
         alarmTriggered = true;
         alarmTriggerStartTime = now;
-        // Auto-switch phase when session finishes
-        if (pomoPhase == PHASE_FOCUS) {
-          pomoPhase = PHASE_BREAK;
-          timerRemainingSeconds = BREAK_MINUTES * 60;
+        pomoCompleteStartTime = now;
+        pomoScreen = POMO_SCREEN_COMPLETE;
+
+        if (pomoSession == POMO_SESS_FOCUS) {
+          completedSessions++;
+          totalSessions++;
+          // 4 completed focus sessions -> long break!
+          pomoSession = (completedSessions % 4 == 0) ? POMO_SESS_LONG_BREAK : POMO_SESS_SHORT_BREAK;
         } else {
-          pomoPhase = PHASE_FOCUS;
-          timerRemainingSeconds = focusMinutes * 60;
+          pomoSession = POMO_SESS_FOCUS;
         }
-        currentScreen = SCREEN_FOCUS_TIMER; // Switch to timer screen when complete
+
+        currentScreen = SCREEN_FOCUS_TIMER;
         displayNeedsUpdate = true;
-        Serial.println("[POMO] Session COMPLETE! Harry Potter Theme triggered!");
+        Serial.println("[POMO] Session COMPLETE! Celebrating with Retro Cat & Hedwig theme!");
       } else {
         if (timerRemainingSeconds != (uint32_t)diff) {
           timerRemainingSeconds = diff;
@@ -955,21 +1244,39 @@ void loop() {
           timerRunning = false;
           alarmTriggered = true;
           alarmTriggerStartTime = now;
-          if (pomoPhase == PHASE_FOCUS) {
-            pomoPhase = PHASE_BREAK;
-            timerRemainingSeconds = BREAK_MINUTES * 60;
+          pomoCompleteStartTime = now;
+          pomoScreen = POMO_SCREEN_COMPLETE;
+
+          if (pomoSession == POMO_SESS_FOCUS) {
+            completedSessions++;
+            totalSessions++;
+            pomoSession = (completedSessions % 4 == 0) ? POMO_SESS_LONG_BREAK : POMO_SESS_SHORT_BREAK;
           } else {
-            pomoPhase = PHASE_FOCUS;
-            timerRemainingSeconds = focusMinutes * 60;
+            pomoSession = POMO_SESS_FOCUS;
           }
+
           currentScreen = SCREEN_FOCUS_TIMER;
           displayNeedsUpdate = true;
-          Serial.println("[POMO] Session COMPLETE! Harry Potter Theme triggered!");
+          Serial.println("[POMO] Session COMPLETE! Celebrating with Retro Cat & Hedwig theme!");
         } else if (currentScreen == SCREEN_FOCUS_TIMER) {
           displayNeedsUpdate = true;
         }
       }
     }
+  }
+
+  // Auto-advance after 3 seconds on COMPLETE screen
+  if (currentScreen == SCREEN_FOCUS_TIMER && pomoScreen == POMO_SCREEN_COMPLETE && (now - pomoCompleteStartTime >= 3000)) {
+    alarmTriggered = false;
+    noTone(BUZZER_PIN);
+    pomoScreen = (pomoSession == POMO_SESS_FOCUS) ? POMO_SCREEN_FOCUS : POMO_SCREEN_BREAK;
+    timerRemainingSeconds = (pomoSession == POMO_SESS_FOCUS) ? (focusMinutes * 60) :
+                            ((pomoSession == POMO_SESS_LONG_BREAK ? longBreakMinutes : shortBreakMinutes) * 60);
+    timerRunning = true;
+    if (rtcFound) {
+      timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+    }
+    displayNeedsUpdate = true;
   }
 
   // -------------------------------------------------------------
@@ -983,7 +1290,8 @@ void loop() {
       alarmTriggerStartTime = now;
       currentScreen = SCREEN_ALARM;
       displayNeedsUpdate = true;
-      Serial.println("[ALARM] >>> SNOOZE EXPIRED! Playing Harry Potter Theme! <<<");
+      Serial.println(
+          "[ALARM] >>> SNOOZE EXPIRED! Playing Harry Potter Theme! <<<");
     }
   }
 
@@ -1004,7 +1312,9 @@ void loop() {
   if ((now - tactileLastDebounceTime) > 30) {
     if (reading != tactileStableState) {
       tactileStableState = reading;
-      Serial.printf("[TAC] GPIO 7 level -> %s\n", (tactileStableState == LOW) ? "PRESSED (LOW)" : "RELEASED (HIGH)");
+      Serial.printf("[TAC] GPIO 7 level -> %s\n", (tactileStableState == LOW)
+                                                      ? "PRESSED (LOW)"
+                                                      : "RELEASED (HIGH)");
 
       if (tactileStableState == LOW) {
         // Button pressed down
@@ -1026,26 +1336,83 @@ void loop() {
             Serial.println("[ALARM] Switched OFF via Tactile Button tap!");
             displayNeedsUpdate = true;
           } else if (currentScreen == SCREEN_ALARM) {
-            // "When I press the tacbutton it should toggle between hours and minutes"
-            currentAlarmField = (currentAlarmField == EDIT_HOURS) ? EDIT_MINUTES : EDIT_HOURS;
-            Serial.printf("[ALARM] Toggle field -> Editing %s\n", (currentAlarmField == EDIT_HOURS) ? "HOURS" : "MINUTES");
+            // "When I press the tacbutton it should toggle between hours and
+            // minutes"
+            currentAlarmField =
+                (currentAlarmField == EDIT_HOURS) ? EDIT_MINUTES : EDIT_HOURS;
+            Serial.printf("[ALARM] Toggle field -> Editing %s\n",
+                          (currentAlarmField == EDIT_HOURS) ? "HOURS"
+                                                            : "MINUTES");
             displayNeedsUpdate = true;
           } else if (currentScreen == SCREEN_FOCUS_TIMER) {
-            // Pause/Resume Pomodoro timer
-            timerRunning = !timerRunning;
-            if (timerRunning) {
-              if (timerRemainingSeconds == 0) {
-                timerRemainingSeconds = (pomoPhase == PHASE_FOCUS ? focusMinutes : BREAK_MINUTES) * 60;
+            if (alarmTriggered) {
+              alarmTriggered = false;
+              noTone(BUZZER_PIN);
+              digitalWrite(ONBOARD_LED_PIN, HIGH);
+              displayNeedsUpdate = true;
+            } else if (pomoScreen == POMO_SCREEN_FOCUS || pomoScreen == POMO_SCREEN_BREAK) {
+              if (timerRunning) {
+                // Pause and switch to PAUSE screen
+                timerRunning = false;
+                pauseIndex = 0;
+                pomoScreen = POMO_SCREEN_PAUSE;
+                Serial.println("[POMO] Paused -> Switched to PAUSE screen");
+              } else {
+                // Start running
+                timerRunning = true;
+                if (timerRemainingSeconds == 0) {
+                  timerRemainingSeconds = (pomoScreen == POMO_SCREEN_FOCUS ? focusMinutes :
+                                          (pomoSession == POMO_SESS_LONG_BREAK ? longBreakMinutes : shortBreakMinutes)) * 60;
+                }
+                if (rtcFound) {
+                  timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+                }
+                Serial.println("[POMO] Timer started!");
               }
+              displayNeedsUpdate = true;
+            } else if (pomoScreen == POMO_SCREEN_PAUSE) {
+              if (pauseIndex == 0) {
+                // RESUME
+                timerRunning = true;
+                pomoScreen = (pomoSession == POMO_SESS_FOCUS) ? POMO_SCREEN_FOCUS : POMO_SCREEN_BREAK;
+                if (timerRemainingSeconds == 0) {
+                  timerRemainingSeconds = (pomoSession == POMO_SESS_FOCUS ? focusMinutes :
+                                          (pomoSession == POMO_SESS_LONG_BREAK ? longBreakMinutes : shortBreakMinutes)) * 60;
+                }
+                if (rtcFound) {
+                  timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+                }
+                Serial.println("[POMO] Resumed!");
+              } else if (pauseIndex == 1) {
+                // RESET
+                timerRunning = false;
+                timerRemainingSeconds = (pomoSession == POMO_SESS_FOCUS ? focusMinutes :
+                                        (pomoSession == POMO_SESS_LONG_BREAK ? longBreakMinutes : shortBreakMinutes)) * 60;
+                pomoScreen = (pomoSession == POMO_SESS_FOCUS) ? POMO_SCREEN_FOCUS : POMO_SCREEN_BREAK;
+                Serial.println("[POMO] Reset current session!");
+              } else {
+                // MENU
+                timerRunning = false;
+                currentScreen = SCREEN_MENU;
+                Serial.println("[POMO] Returned to SENU Menu");
+              }
+              displayNeedsUpdate = true;
+            } else if (pomoScreen == POMO_SCREEN_COMPLETE) {
+              alarmTriggered = false;
+              noTone(BUZZER_PIN);
+              pomoScreen = (pomoSession == POMO_SESS_FOCUS) ? POMO_SCREEN_FOCUS : POMO_SCREEN_BREAK;
+              timerRemainingSeconds = (pomoSession == POMO_SESS_FOCUS ? focusMinutes :
+                                      (pomoSession == POMO_SESS_LONG_BREAK ? longBreakMinutes : shortBreakMinutes)) * 60;
+              timerRunning = true;
               if (rtcFound) {
                 timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
               }
+              displayNeedsUpdate = true;
             }
-            Serial.printf("[POMO] Focus Timer -> Running: %d (Phase: %s)\n", timerRunning, pomoPhase == PHASE_FOCUS ? "FOCUS" : "BREAK");
-            displayNeedsUpdate = true;
           } else if (currentScreen == SCREEN_PC_METRICS) {
             netForceRefresh = true;
-            Serial.println("[METRICS] Force refresh requested via Tactile Button tap!");
+            Serial.println(
+                "[METRICS] Force refresh requested via Tactile Button tap!");
             soundShortChirp();
             displayNeedsUpdate = true;
           } else {
@@ -1069,10 +1436,13 @@ void loop() {
         // "snooze after pressing and holding the tac button"
         alarmTriggered = false;
         snoozeActive = true;
-        snoozeUntilEpoch = (rtcFound ? rtc.now().unixtime() : (millis() / 1000)) + 300; // 5 min snooze
+        snoozeUntilEpoch =
+            (rtcFound ? rtc.now().unixtime() : (millis() / 1000)) +
+            300; // 5 min snooze
         noTone(BUZZER_PIN);
         digitalWrite(ONBOARD_LED_PIN, HIGH);
-        Serial.println("[ALARM] SNOOZED for 5 minutes via Tactile Button hold!");
+        Serial.println(
+            "[ALARM] SNOOZED for 5 minutes via Tactile Button hold!");
         displayNeedsUpdate = true;
       } else if (currentScreen == SCREEN_ALARM) {
         // In Alarm screen: Hold tests the Harry Potter melody!
@@ -1081,10 +1451,13 @@ void loop() {
         Serial.println("[ALARM] Preview test: Playing Harry Potter Theme!");
         displayNeedsUpdate = true;
       } else if (currentScreen == SCREEN_FOCUS_TIMER) {
-        // Reset timer
+        // Reset current session timer & open pause screen
         timerRunning = false;
-        timerRemainingSeconds = (pomoPhase == PHASE_FOCUS ? focusMinutes : BREAK_MINUTES) * 60;
-        Serial.printf("[POMO] Focus Timer Reset! (Phase: %s)\n", pomoPhase == PHASE_FOCUS ? "FOCUS" : "BREAK");
+        timerRemainingSeconds = (pomoSession == POMO_SESS_FOCUS ? focusMinutes :
+                                (pomoSession == POMO_SESS_LONG_BREAK ? longBreakMinutes : shortBreakMinutes)) * 60;
+        pomoScreen = POMO_SCREEN_PAUSE;
+        pauseIndex = 0;
+        Serial.println("[POMO] Focus Timer Reset via Tac Button Hold!");
         displayNeedsUpdate = true;
       } else if (currentScreen == SCREEN_PC_METRICS) {
         // Long press returns to menu
@@ -1099,7 +1472,8 @@ void loop() {
   // -------------------------------------------------------------
   // 3. Universal Quadrature Rotary Encoder Decoder
   // -------------------------------------------------------------
-  uint8_t currentPins = (digitalRead(ENCODER_CLK_PIN) << 1) | digitalRead(ENCODER_DT_PIN);
+  uint8_t currentPins =
+      (digitalRead(ENCODER_CLK_PIN) << 1) | digitalRead(ENCODER_DT_PIN);
   uint8_t lastPins = encoderHistory & 0x03;
 
   if (currentPins != lastPins) {
@@ -1109,7 +1483,8 @@ void loop() {
     if (step != 0) {
       accumulatedSteps += step;
 
-      // Filter detent notches cleanly (accumulates 2 quadrature transitions per click)
+      // Filter detent notches cleanly (accumulates 2 quadrature transitions per
+      // click)
       if (accumulatedSteps >= 2 || accumulatedSteps <= -2) {
         int delta = (accumulatedSteps > 0) ? 1 : -1;
         accumulatedSteps = 0;
@@ -1120,18 +1495,32 @@ void loop() {
             selectedMenuIndex += TOTAL_MENU_ITEMS;
           Serial.printf("[ENC] Menu Scroll -> Index: %d\n", selectedMenuIndex);
           displayNeedsUpdate = true;
-        } else if (currentScreen == SCREEN_FOCUS_TIMER && !timerRunning) {
-          if (pomoPhase == PHASE_FOCUS) {
+        } else if (currentScreen == SCREEN_FOCUS_TIMER) {
+          if (pomoScreen == POMO_SCREEN_FOCUS && !timerRunning) {
             focusMinutes += delta;
             if (focusMinutes < 1) focusMinutes = 1;
             if (focusMinutes > 90) focusMinutes = 90;
             timerRemainingSeconds = focusMinutes * 60;
             Serial.printf("[POMO] Focus set to: %d min\n", focusMinutes);
-          } else {
-            pomoPhase = PHASE_FOCUS;
-            timerRemainingSeconds = focusMinutes * 60;
+            displayNeedsUpdate = true;
+          } else if (pomoScreen == POMO_SCREEN_PAUSE) {
+            pauseIndex = (pauseIndex + delta + 3) % 3;
+            soundShortChirp();
+            displayNeedsUpdate = true;
+          } else if (pomoScreen == POMO_SCREEN_BREAK && !timerRunning) {
+            if (pomoSession == POMO_SESS_LONG_BREAK) {
+              longBreakMinutes += delta;
+              if (longBreakMinutes < 1) longBreakMinutes = 1;
+              if (longBreakMinutes > 60) longBreakMinutes = 60;
+              timerRemainingSeconds = longBreakMinutes * 60;
+            } else {
+              shortBreakMinutes += delta;
+              if (shortBreakMinutes < 1) shortBreakMinutes = 1;
+              if (shortBreakMinutes > 30) shortBreakMinutes = 30;
+              timerRemainingSeconds = shortBreakMinutes * 60;
+            }
+            displayNeedsUpdate = true;
           }
-          displayNeedsUpdate = true;
         } else if (currentScreen == SCREEN_ALARM) {
           // Select exact number based on field toggled with Tac Button!
           if (currentAlarmField == EDIT_HOURS) {
@@ -1144,8 +1533,11 @@ void loop() {
           displayNeedsUpdate = true;
         } else if (currentScreen == SCREEN_PC_METRICS) {
           // Switch carousel slide in PC metrics
-          metricsCarouselPage = (metricsCarouselPage + delta + TOTAL_METRICS_PAGES) % TOTAL_METRICS_PAGES;
-          Serial.printf("[METRICS] Carousel Slide: %d\n", metricsCarouselPage + 1);
+          metricsCarouselPage =
+              (metricsCarouselPage + delta + TOTAL_METRICS_PAGES) %
+              TOTAL_METRICS_PAGES;
+          Serial.printf("[METRICS] Carousel Slide: %d\n",
+                        metricsCarouselPage + 1);
           soundShortChirp();
           displayNeedsUpdate = true;
         }
@@ -1158,7 +1550,8 @@ void loop() {
   // -------------------------------------------------------------
   int currentButtonState = digitalRead(ENCODER_SW_PIN);
 
-  if (currentButtonState == LOW && lastButtonState == HIGH && (now - lastButtonCheck > 150)) {
+  if (currentButtonState == LOW && lastButtonState == HIGH &&
+      (now - lastButtonCheck > 150)) {
     buttonPressStart = now;
     buttonWasPressed = true;
     lastButtonCheck = now;
@@ -1166,7 +1559,8 @@ void loop() {
   }
 
   // Long press (held for >= 600ms): Return to Main Menu immediately
-  if (buttonWasPressed && currentButtonState == LOW && (now - buttonPressStart >= 600)) {
+  if (buttonWasPressed && currentButtonState == LOW &&
+      (now - buttonPressStart >= 600)) {
     buttonWasPressed = false;
     ledState = !ledState;
     digitalWrite(ONBOARD_LED_PIN, ledState ? LOW : HIGH);
@@ -1176,7 +1570,8 @@ void loop() {
   }
 
   // Short click (released before 600ms)
-  if (buttonWasPressed && currentButtonState == HIGH && lastButtonState == LOW) {
+  if (buttonWasPressed && currentButtonState == HIGH &&
+      lastButtonState == LOW) {
     buttonWasPressed = false;
     ledState = !ledState;
     digitalWrite(ONBOARD_LED_PIN, ledState ? LOW : HIGH);
@@ -1201,16 +1596,65 @@ void loop() {
         currentScreen = SCREEN_MENU;
       Serial.printf("[BTN] Selected Screen: %d\n", currentScreen);
     } else if (currentScreen == SCREEN_FOCUS_TIMER) {
-      timerRunning = !timerRunning;
-      if (timerRunning) {
-        if (timerRemainingSeconds == 0) {
-          timerRemainingSeconds = (pomoPhase == PHASE_FOCUS ? focusMinutes : BREAK_MINUTES) * 60;
+      if (alarmTriggered) {
+        alarmTriggered = false;
+        noTone(BUZZER_PIN);
+        digitalWrite(ONBOARD_LED_PIN, HIGH);
+        displayNeedsUpdate = true;
+      } else if (pomoScreen == POMO_SCREEN_FOCUS || pomoScreen == POMO_SCREEN_BREAK) {
+        if (timerRunning) {
+          timerRunning = false;
+          pauseIndex = 0;
+          pomoScreen = POMO_SCREEN_PAUSE;
+          Serial.println("[POMO] Paused via Knob click");
+        } else {
+          timerRunning = true;
+          if (timerRemainingSeconds == 0) {
+            timerRemainingSeconds = (pomoScreen == POMO_SCREEN_FOCUS ? focusMinutes :
+                                    (pomoSession == POMO_SESS_LONG_BREAK ? longBreakMinutes : shortBreakMinutes)) * 60;
+          }
+          if (rtcFound) {
+            timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+          }
+          Serial.println("[POMO] Started via Knob click");
         }
+        displayNeedsUpdate = true;
+      } else if (pomoScreen == POMO_SCREEN_PAUSE) {
+        if (pauseIndex == 0) {
+          timerRunning = true;
+          pomoScreen = (pomoSession == POMO_SESS_FOCUS) ? POMO_SCREEN_FOCUS : POMO_SCREEN_BREAK;
+          if (timerRemainingSeconds == 0) {
+            timerRemainingSeconds = (pomoSession == POMO_SESS_FOCUS ? focusMinutes :
+                                    (pomoSession == POMO_SESS_LONG_BREAK ? longBreakMinutes : shortBreakMinutes)) * 60;
+          }
+          if (rtcFound) {
+            timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+          }
+          Serial.println("[POMO] Resumed via Knob click");
+        } else if (pauseIndex == 1) {
+          timerRunning = false;
+          timerRemainingSeconds = (pomoSession == POMO_SESS_FOCUS ? focusMinutes :
+                                  (pomoSession == POMO_SESS_LONG_BREAK ? longBreakMinutes : shortBreakMinutes)) * 60;
+          pomoScreen = (pomoSession == POMO_SESS_FOCUS) ? POMO_SCREEN_FOCUS : POMO_SCREEN_BREAK;
+          Serial.println("[POMO] Reset current session");
+        } else {
+          timerRunning = false;
+          currentScreen = SCREEN_MENU;
+          Serial.println("[POMO] Returned to MENU via Pause screen");
+        }
+        displayNeedsUpdate = true;
+      } else if (pomoScreen == POMO_SCREEN_COMPLETE) {
+        alarmTriggered = false;
+        noTone(BUZZER_PIN);
+        pomoScreen = (pomoSession == POMO_SESS_FOCUS) ? POMO_SCREEN_FOCUS : POMO_SCREEN_BREAK;
+        timerRemainingSeconds = (pomoSession == POMO_SESS_FOCUS ? focusMinutes :
+                                (pomoSession == POMO_SESS_LONG_BREAK ? longBreakMinutes : shortBreakMinutes)) * 60;
+        timerRunning = true;
         if (rtcFound) {
           timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
         }
+        displayNeedsUpdate = true;
       }
-      Serial.printf("[BTN] Focus Timer toggled -> Running: %d (Phase: %s)\n", timerRunning, pomoPhase == PHASE_FOCUS ? "FOCUS" : "BREAK");
     } else if (currentScreen == SCREEN_ALARM) {
       // Toggle alarm enabled / disabled
       alarmEnabled = !alarmEnabled;
@@ -1222,9 +1666,15 @@ void loop() {
   }
   lastButtonState = currentButtonState;
 
-  // Refresh display at 80ms on Focus Timer for cat blinking animation, 140ms on carousel marquee, 300ms on static screens
-  unsigned long refreshInterval = (currentScreen == SCREEN_FOCUS_TIMER) ? 80 :
-      ((currentScreen == SCREEN_PC_METRICS || currentScreen == SCREEN_TASKS || currentScreen == SCREEN_ALARM) ? 140 : 300);
+  // Refresh display at 80ms on Focus Timer for cat blinking animation, 140ms on
+  // carousel marquee, 300ms on static screens
+  unsigned long refreshInterval =
+      (currentScreen == SCREEN_FOCUS_TIMER)
+          ? 80
+          : ((currentScreen == SCREEN_PC_METRICS ||
+              currentScreen == SCREEN_TASKS || currentScreen == SCREEN_ALARM)
+                 ? 140
+                 : 300);
   if (now - lastClockTick >= refreshInterval) {
     lastClockTick = now;
     displayNeedsUpdate = true;
