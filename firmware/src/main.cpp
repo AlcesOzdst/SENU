@@ -98,6 +98,7 @@ enum ArcMenuItem : uint8_t {
   ARC_MENU_SHORT_BREAK = 1,
   ARC_MENU_FOCUS = 2,
   ARC_MENU_LONG_BREAK = 3,
+  ARC_MENU_ALARM = 4,
   ARC_MENU_SETTINGS = 4,
   ARC_MENU_COUNT = 5
 };
@@ -123,9 +124,9 @@ enum PomoSession : uint8_t {
 };
 PomoSession pomoSession = POMO_SESS_FOCUS;
 
-uint8_t focusMinutes = 25;
-uint8_t shortBreakMinutes = 5;
-uint8_t longBreakMinutes = 15;
+uint16_t focusMinutes = 25;
+uint16_t shortBreakMinutes = 5;
+uint16_t longBreakMinutes = 15;
 uint8_t completedSessions = 0;
 uint8_t totalSessions = 0;
 uint8_t pauseIndex = 0; // 0: RESUME, 1: RESET, 2: MENU
@@ -467,6 +468,11 @@ void updateMelodyPlayer(unsigned long now) {
 }
 
 void soundShortChirp() { tone(BUZZER_PIN, 1800, 20); }
+void soundDoubleChirp() {
+  tone(BUZZER_PIN, 1800, 25);
+  delay(35);
+  tone(BUZZER_PIN, 2400, 35);
+}
 void drawBoot(uint32_t now);
 
 void setup() {
@@ -646,23 +652,38 @@ void drawLongBreakIcon(int x, int y, uint16_t color) {
 }
 
 void drawStatsIcon(int x, int y, uint16_t color) {
-  display.fillRect(x - 6, y + 2, 3, 5, color);
-  display.fillRect(x - 1, y - 2, 3, 9, color);
-  display.fillRect(x + 4, y - 6, 3, 13, color);
+  // Clean baseline with 3 ascending metric bars
+  display.drawFastHLine(x - 6, y + 6, 13, color);
+  display.fillRect(x - 5, y + 2, 2, 4, color);
+  display.fillRect(x - 1, y - 2, 2, 8, color);
+  display.fillRect(x + 3, y - 6, 2, 12, color);
+}
+
+void drawAlarmIcon(int x, int y, uint16_t color) {
+  uint16_t oppCol = (color == SSD1306_BLACK) ? SSD1306_WHITE : SSD1306_BLACK;
+  // Clock body
+  display.fillCircle(x, y, 4, color);
+  display.fillCircle(x, y, 3, oppCol);
+  // Hands (10:10)
+  display.drawLine(x, y, x - 2, y - 1, color);
+  display.drawLine(x, y, x + 1, y - 2, color);
+  display.drawPixel(x, y, color);
+  // Twin bells on top
+  display.drawPixel(x - 3, y - 5, color);
+  display.drawPixel(x - 4, y - 4, color);
+  display.drawPixel(x + 3, y - 5, color);
+  display.drawPixel(x + 4, y - 4, color);
+  // Hammer between bells
+  display.drawPixel(x, y - 5, color);
+  // Angled feet
+  display.drawPixel(x - 3, y + 4, color);
+  display.drawPixel(x - 4, y + 5, color);
+  display.drawPixel(x + 3, y + 4, color);
+  display.drawPixel(x + 4, y + 5, color);
 }
 
 void drawSettingsIcon(int x, int y, uint16_t color) {
-  uint16_t oppCol = (color == SSD1306_BLACK) ? SSD1306_WHITE : SSD1306_BLACK;
-  display.fillCircle(x, y, 5, color);
-  display.fillCircle(x, y, 2, oppCol);
-  display.drawLine(x - 7, y, x - 5, y, color);
-  display.drawLine(x + 5, y, x + 7, y, color);
-  display.drawLine(x, y - 7, x, y - 5, color);
-  display.drawLine(x, y + 5, x, y + 7, color);
-  display.drawPixel(x - 5, y - 4, color);
-  display.drawPixel(x + 4, y - 4, color);
-  display.drawPixel(x - 5, y + 4, color);
-  display.drawPixel(x + 4, y + 4, color);
+  drawAlarmIcon(x, y, color);
 }
 
 void drawMenuCenterCat(int x, int y, uint32_t now) {
@@ -760,62 +781,45 @@ void renderMenu() {
   drawArcSegmentLine(288.0f, SSD1306_WHITE);
   drawArcSegmentLine(324.0f, SSD1306_WHITE);
 
-  // 6. Draw each sector's icon & label
+  // 6. Draw each sector's icon & label (Clean wedge view: no duration text under names)
   // Sector 0: STATS
   {
     bool active = (selectedMenuIndex == ARC_MENU_STATS);
     uint16_t col = active ? SSD1306_BLACK : SSD1306_WHITE;
-    drawStatsIcon(16, 40, col);
-    drawArcText(15, 51, "STATS", col, 1);
+    drawStatsIcon(16, 38, col);
+    drawArcText(15, 49, "STATS", col, 1);
   }
 
-  // Sector 1: SHORT BREAK (5m)
+  // Sector 1: SHORT BREAK
   {
     bool active = (selectedMenuIndex == ARC_MENU_SHORT_BREAK);
     uint16_t col = active ? SSD1306_BLACK : SSD1306_WHITE;
-    drawShortBreakIcon(35, 22, col);
-    char buf[8];
-    snprintf(buf, sizeof(buf), "%dm", shortBreakMinutes);
-    if (active) {
-      drawArcText(33, 31, "BREAK", col, 1);
-      drawArcText(37, 40, buf, col, 1);
-    } else {
-      drawArcText(35, 34, buf, col, 1);
-    }
+    drawShortBreakIcon(35, 23, col);
+    drawArcText(35, 35, "BREAK", col, 1);
   }
 
-  // Sector 2: FOCUS (25m)
+  // Sector 2: FOCUS
   {
     bool active = (selectedMenuIndex == ARC_MENU_FOCUS);
     uint16_t col = active ? SSD1306_BLACK : SSD1306_WHITE;
-    drawFocusIcon(64, 15, col);
-    char buf[8];
-    snprintf(buf, sizeof(buf), "%dm", focusMinutes);
-    drawArcText(64, 25, "FOCUS", col, 1);
-    drawArcText(64, 35, buf, col, 1);
+    drawFocusIcon(64, 17, col);
+    drawArcText(64, 31, "FOCUS", col, 1);
   }
 
-  // Sector 3: LONG BREAK (15m)
+  // Sector 3: LONG BREAK
   {
     bool active = (selectedMenuIndex == ARC_MENU_LONG_BREAK);
     uint16_t col = active ? SSD1306_BLACK : SSD1306_WHITE;
-    drawLongBreakIcon(93, 22, col);
-    char buf[8];
-    snprintf(buf, sizeof(buf), "%dm", longBreakMinutes);
-    if (active) {
-      drawArcText(95, 31, "LONG", col, 1);
-      drawArcText(91, 40, buf, col, 1);
-    } else {
-      drawArcText(93, 34, buf, col, 1);
-    }
+    drawLongBreakIcon(93, 23, col);
+    drawArcText(93, 35, "LONG", col, 1);
   }
 
-  // Sector 4: SETTINGS
+  // Sector 4: ALARM (Clock icon & ALARM label)
   {
-    bool active = (selectedMenuIndex == ARC_MENU_SETTINGS);
+    bool active = (selectedMenuIndex == ARC_MENU_ALARM);
     uint16_t col = active ? SSD1306_BLACK : SSD1306_WHITE;
-    drawSettingsIcon(112, 40, col);
-    drawArcText(112, 51, "SET", col, 1);
+    drawAlarmIcon(112, 38, col);
+    drawArcText(112, 49, "ALARM", col, 1);
   }
 
   // 7. Central companion cat
@@ -829,53 +833,44 @@ void renderMenu() {
   }
 }
 
-void activateArcMenuItem(uint8_t item) {
+void executeMenuSingleTap(uint8_t item) {
   soundShortChirp();
   switch (item) {
   case ARC_MENU_FOCUS:
     pomoSession = POMO_SESS_FOCUS;
     pomoScreen = POMO_SCREEN_FOCUS;
     timerRemainingSeconds = (uint32_t)focusMinutes * 60;
-    timerRunning = true;
-    if (rtcFound) {
-      timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
-    }
+    timerRunning = false; // Customize mode: dial minutes, tap knob to start!
     currentScreen = SCREEN_FOCUS_TIMER;
-    Serial.printf("[MENU] Started FOCUS session (%d min)\n", focusMinutes);
+    Serial.printf("[MENU] Single-tap FOCUS -> Customize mode (%d min)\n", focusMinutes);
     break;
 
   case ARC_MENU_SHORT_BREAK:
     pomoSession = POMO_SESS_SHORT_BREAK;
     pomoScreen = POMO_SCREEN_BREAK;
     timerRemainingSeconds = (uint32_t)shortBreakMinutes * 60;
-    timerRunning = true;
-    if (rtcFound) {
-      timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
-    }
+    timerRunning = false; // Customize mode: dial minutes, tap knob to start!
     currentScreen = SCREEN_FOCUS_TIMER;
-    Serial.printf("[MENU] Started SHORT BREAK (%d min)\n", shortBreakMinutes);
+    Serial.printf("[MENU] Single-tap SHORT BREAK -> Customize mode (%d min)\n", shortBreakMinutes);
     break;
 
   case ARC_MENU_LONG_BREAK:
     pomoSession = POMO_SESS_LONG_BREAK;
     pomoScreen = POMO_SCREEN_BREAK;
     timerRemainingSeconds = (uint32_t)longBreakMinutes * 60;
-    timerRunning = true;
-    if (rtcFound) {
-      timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
-    }
+    timerRunning = false; // Customize mode: dial minutes, tap knob to start!
     currentScreen = SCREEN_FOCUS_TIMER;
-    Serial.printf("[MENU] Started LONG BREAK (%d min)\n", longBreakMinutes);
+    Serial.printf("[MENU] Single-tap LONG BREAK -> Customize mode (%d min)\n", longBreakMinutes);
     break;
 
   case ARC_MENU_STATS:
     currentScreen = SCREEN_PC_METRICS;
-    Serial.println("[MENU] Opened PC METRICS screen");
+    Serial.println("[MENU] Single-tap -> Opened PC METRICS screen");
     break;
 
-  case ARC_MENU_SETTINGS:
+  case ARC_MENU_ALARM:
     currentScreen = SCREEN_ALARM;
-    Serial.println("[MENU] Opened ALARM SETTINGS screen");
+    Serial.println("[MENU] Single-tap -> Opened ALARM screen");
     break;
 
   default:
@@ -883,6 +878,10 @@ void activateArcMenuItem(uint8_t item) {
     break;
   }
   displayNeedsUpdate = true;
+}
+
+void activateArcMenuItem(uint8_t item) {
+  executeMenuSingleTap(item);
 }
 
 // =====================================================
@@ -959,14 +958,31 @@ void drawProgress(uint32_t leftMs, uint32_t totalMs) {
 
 void drawCountdown(uint32_t ms, int x, int y) {
   uint32_t secs = (ms + 999) / 1000;
-  char buf[8];
-  snprintf(buf, sizeof(buf), "%02lu:%02lu",
-           (unsigned long)(secs / 60),
-           (unsigned long)(secs % 60));
-  display.setTextSize(2);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(x, y);
-  display.print(buf);
+  if (secs >= 3600) {
+    unsigned long h = secs / 3600;
+    unsigned long m = (secs % 3600) / 60;
+    unsigned long s = secs % 60;
+    char hmBuf[8];
+    snprintf(hmBuf, sizeof(hmBuf), "%lu:%02lu", h, m);
+    display.setTextSize(2);
+    display.setCursor(x, y);
+    display.print(hmBuf);
+
+    char sBuf[6];
+    snprintf(sBuf, sizeof(sBuf), ":%02lu", s);
+    display.setTextSize(1);
+    display.setCursor(x + (int)strlen(hmBuf) * 12, y + 6);
+    display.print(sBuf);
+  } else {
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%02lu:%02lu",
+             (unsigned long)(secs / 60),
+             (unsigned long)(secs % 60));
+    display.setTextSize(2);
+    display.setCursor(x, y);
+    display.print(buf);
+  }
 }
 
 // Compact, hand-drawn multi-pose pixel cat
@@ -1130,7 +1146,7 @@ void drawPomoBreak(uint32_t now, uint32_t leftMs) {
 
   display.drawFastHLine(5, 16, 118, SSD1306_WHITE);
 
-  drawCountdown(leftMs, 72, 19);
+  drawCountdown(leftMs, 64, 19);
 
   // Window
   display.drawRect(7, 23, 25, 27, SSD1306_WHITE);
@@ -1382,6 +1398,10 @@ void loop() {
   static bool buttonWasPressed = false;
   static int lastButtonState = HIGH;
   static bool ledState = false;
+  static bool pendingMenuSingleClick = false;
+  static unsigned long pendingMenuClickTime = 0;
+  static uint8_t pendingMenuItem = ARC_MENU_FOCUS;
+  constexpr unsigned long DOUBLE_TAP_WINDOW_MS = 320;
 
   // 16-State Quadrature Transition Table
   static const int8_t qeTable[16] = {0,  -1, 1, 0, 1, 0, 0,  -1,
@@ -1746,7 +1766,7 @@ void loop() {
             soundShortChirp();
             displayNeedsUpdate = true;
           } else if (currentScreen == SCREEN_MENU) {
-            activateArcMenuItem(selectedMenuIndex);
+            executeMenuSingleTap(selectedMenuIndex);
           } else {
             // Feedback in menu
             ledState = !ledState;
@@ -1822,6 +1842,7 @@ void loop() {
         accumulatedSteps = 0;
 
         if (currentScreen == SCREEN_MENU) {
+          pendingMenuSingleClick = false; // Cancel pending click when scrolling
           selectedMenuIndex = (selectedMenuIndex + delta) % TOTAL_MENU_ITEMS;
           if (selectedMenuIndex < 0)
             selectedMenuIndex += TOTAL_MENU_ITEMS;
@@ -1829,10 +1850,11 @@ void loop() {
           displayNeedsUpdate = true;
         } else if (currentScreen == SCREEN_FOCUS_TIMER) {
           if (pomoScreen == POMO_SCREEN_FOCUS && !timerRunning) {
-            focusMinutes += delta;
-            if (focusMinutes < 1) focusMinutes = 1;
-            if (focusMinutes > 90) focusMinutes = 90;
-            timerRemainingSeconds = focusMinutes * 60;
+            int newMin = (int)focusMinutes + delta;
+            if (newMin < 1) newMin = 1;
+            if (newMin > 240) newMin = 240; // Supports long hours up to 4 hours
+            focusMinutes = (uint16_t)newMin;
+            timerRemainingSeconds = (uint32_t)focusMinutes * 60;
             Serial.printf("[POMO] Focus set to: %d min\n", focusMinutes);
             displayNeedsUpdate = true;
           } else if (pomoScreen == POMO_SCREEN_PAUSE) {
@@ -1841,15 +1863,19 @@ void loop() {
             displayNeedsUpdate = true;
           } else if (pomoScreen == POMO_SCREEN_BREAK && !timerRunning) {
             if (pomoSession == POMO_SESS_LONG_BREAK) {
-              longBreakMinutes += delta;
-              if (longBreakMinutes < 1) longBreakMinutes = 1;
-              if (longBreakMinutes > 60) longBreakMinutes = 60;
-              timerRemainingSeconds = longBreakMinutes * 60;
+              int newMin = (int)longBreakMinutes + delta;
+              if (newMin < 1) newMin = 1;
+              if (newMin > 180) newMin = 180; // Supports long break up to 3 hours
+              longBreakMinutes = (uint16_t)newMin;
+              timerRemainingSeconds = (uint32_t)longBreakMinutes * 60;
+              Serial.printf("[POMO] Long break set to: %d min\n", longBreakMinutes);
             } else {
-              shortBreakMinutes += delta;
-              if (shortBreakMinutes < 1) shortBreakMinutes = 1;
-              if (shortBreakMinutes > 30) shortBreakMinutes = 30;
-              timerRemainingSeconds = shortBreakMinutes * 60;
+              int newMin = (int)shortBreakMinutes + delta;
+              if (newMin < 1) newMin = 1;
+              if (newMin > 60) newMin = 60;
+              shortBreakMinutes = (uint16_t)newMin;
+              timerRemainingSeconds = (uint32_t)shortBreakMinutes * 60;
+              Serial.printf("[POMO] Short break set to: %d min\n", shortBreakMinutes);
             }
             displayNeedsUpdate = true;
           }
@@ -1883,7 +1909,7 @@ void loop() {
   int currentButtonState = digitalRead(ENCODER_SW_PIN);
 
   if (currentButtonState == LOW && lastButtonState == HIGH &&
-      (now - lastButtonCheck > 150)) {
+      (now - lastButtonCheck > 50)) {
     buttonPressStart = now;
     buttonWasPressed = true;
     lastButtonCheck = now;
@@ -1894,6 +1920,7 @@ void loop() {
   if (buttonWasPressed && currentButtonState == LOW &&
       (now - buttonPressStart >= 600)) {
     buttonWasPressed = false;
+    pendingMenuSingleClick = false;
     ledState = !ledState;
     digitalWrite(ONBOARD_LED_PIN, ledState ? LOW : HIGH);
     currentScreen = SCREEN_MENU;
@@ -1916,7 +1943,28 @@ void loop() {
       digitalWrite(ONBOARD_LED_PIN, HIGH);
       displayNeedsUpdate = true;
     } else if (currentScreen == SCREEN_MENU) {
-      activateArcMenuItem(selectedMenuIndex);
+      if (pendingMenuSingleClick) {
+        // DOUBLE-TAP detected within DOUBLE_TAP_WINDOW_MS:
+        // Quick-start default 25m Pomodoro session immediately!
+        pendingMenuSingleClick = false;
+        pomoSession = POMO_SESS_FOCUS;
+        pomoScreen = POMO_SCREEN_FOCUS;
+        focusMinutes = 25;
+        timerRemainingSeconds = 25 * 60;
+        timerRunning = true;
+        if (rtcFound) {
+          timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+        }
+        currentScreen = SCREEN_FOCUS_TIMER;
+        soundDoubleChirp();
+        Serial.println("[MENU] Double-tap detected -> Quick-started default 25m Pomodoro!");
+        displayNeedsUpdate = true;
+      } else {
+        // FIRST TAP: Start double-tap detection window
+        pendingMenuSingleClick = true;
+        pendingMenuClickTime = now;
+        pendingMenuItem = (uint8_t)selectedMenuIndex;
+      }
     } else if (currentScreen == SCREEN_FOCUS_TIMER) {
       if (alarmTriggered) {
         alarmTriggered = false;
@@ -1938,6 +1986,7 @@ void loop() {
           if (rtcFound) {
             timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
           }
+          soundShortChirp();
           Serial.println("[POMO] Started via Knob click");
         }
         displayNeedsUpdate = true;
@@ -1987,6 +2036,15 @@ void loop() {
     displayNeedsUpdate = true;
   }
   lastButtonState = currentButtonState;
+
+  // Check if Menu Single-Tap window expired without double-tap
+  if (pendingMenuSingleClick && (now - pendingMenuClickTime >= DOUBLE_TAP_WINDOW_MS)) {
+    pendingMenuSingleClick = false;
+    if (currentScreen == SCREEN_MENU) {
+      executeMenuSingleTap(pendingMenuItem);
+      displayNeedsUpdate = true;
+    }
+  }
 
   // Refresh display at 80ms on Focus Timer & Menu for cat blinking animation, 140ms on
   // carousel marquee, 300ms on static screens
