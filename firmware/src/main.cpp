@@ -1,4 +1,31 @@
+#if __has_include("../include/config.h")
 #include "../include/config.h"
+#elif __has_include("config.h")
+#include "config.h"
+#elif __has_include("../include/config.example.h")
+#include "../include/config.example.h"
+#endif
+
+// Safe fallback credentials if config.h is absent
+#ifndef WIFI_SSID
+#define WIFI_SSID "YOUR_WIFI_SSID"
+#endif
+
+#ifndef WIFI_PASS
+#define WIFI_PASS "YOUR_WIFI_PASSWORD"
+#endif
+
+#ifndef AGENT_HOST
+#define AGENT_HOST "192.168.1.100"
+#endif
+
+#ifndef AGENT_PORT
+#define AGENT_PORT 8000
+#endif
+
+#ifndef METRICS_POLL_INTERVAL_MS
+#define METRICS_POLL_INTERVAL_MS 2500
+#endif
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Arduino.h>

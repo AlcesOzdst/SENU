@@ -20,3 +20,7 @@ compile_commands.json
 # Private Reference Documents & Notes
 docs/LOGBOOK.md
 *.pdf
+
+# Private Hardware & Network Configuration
+firmware/include/config.h
+
