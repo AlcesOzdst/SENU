@@ -548,9 +548,9 @@ void setup() {
 // ARC SLIDER MENU - FINAL UI (Reference Geometry)
 // =====================================================
 constexpr int ARC_CENTER_X = 64;
-constexpr int ARC_CENTER_Y = 69;
-constexpr int ARC_OUTER_R = 54;
-constexpr int ARC_INNER_R = 29;
+constexpr int ARC_CENTER_Y = 76;
+constexpr int ARC_OUTER_R = 70;
+constexpr int ARC_INNER_R = 26;
 constexpr float PI_F = 3.14159265f;
 
 void drawArcText(int x, int y, const char *str, uint16_t color = SSD1306_WHITE, uint8_t size = 1) {
@@ -564,7 +564,7 @@ void drawArcText(int x, int y, const char *str, uint16_t color = SSD1306_WHITE, 
 }
 
 void drawArc(int radius, uint16_t color = SSD1306_WHITE) {
-  for (int deg = 180; deg <= 360; deg++) {
+  for (float deg = 180.0f; deg <= 360.0f; deg += 0.5f) {
     float rad = deg * PI_F / 180.0f;
     int x = ARC_CENTER_X + (int)roundf(radius * cosf(rad));
     int y = ARC_CENTER_Y + (int)roundf(radius * sinf(rad));
@@ -588,7 +588,7 @@ void drawArcSegmentLine(float angleDeg, uint16_t color = SSD1306_WHITE) {
 void fillArcSector(uint8_t sector, uint16_t color = SSD1306_WHITE) {
   float startDeg = 180.0f + sector * 36.0f;
   float endDeg = startDeg + 36.0f;
-  for (float a = startDeg; a <= endDeg; a += 0.35f) {
+  for (float a = startDeg; a <= endDeg; a += 0.3f) {
     float rad = a * PI_F / 180.0f;
     float c = cosf(rad);
     float s = sinf(rad);
@@ -602,22 +602,22 @@ void fillArcSector(uint8_t sector, uint16_t color = SSD1306_WHITE) {
 
 void drawFocusIcon(int x, int y, uint16_t color) {
   // Laptop base line
-  display.drawLine(x - 7, y + 5, x + 7, y + 5, color);
+  display.drawLine(x - 7, y + 4, x + 7, y + 4, color);
   // Laptop screen on right
-  display.drawRect(x + 1, y - 4, 7, 8, color);
-  display.drawPixel(x + 3, y - 1, color);
+  display.drawRect(x + 1, y - 5, 7, 8, color);
+  display.drawPixel(x + 3, y - 2, color);
   // Cat head on left
-  display.fillRoundRect(x - 8, y - 2, 8, 7, 2, color);
+  display.fillRoundRect(x - 8, y - 3, 8, 7, 2, color);
   // Cat ears
-  display.drawPixel(x - 8, y - 4, color);
-  display.drawPixel(x - 7, y - 3, color);
-  display.drawPixel(x - 4, y - 4, color);
-  display.drawPixel(x - 5, y - 3, color);
+  display.drawPixel(x - 8, y - 5, color);
+  display.drawPixel(x - 7, y - 4, color);
+  display.drawPixel(x - 4, y - 5, color);
+  display.drawPixel(x - 5, y - 4, color);
   // Cat paw on keyboard
-  display.drawPixel(x, y + 4, color);
+  display.drawPixel(x, y + 3, color);
   // Eye
   uint16_t eyeCol = (color == SSD1306_BLACK) ? SSD1306_WHITE : SSD1306_BLACK;
-  display.drawPixel(x - 6, y, eyeCol);
+  display.drawPixel(x - 6, y - 1, eyeCol);
 }
 
 void drawShortBreakIcon(int x, int y, uint16_t color) {
@@ -630,83 +630,83 @@ void drawShortBreakIcon(int x, int y, uint16_t color) {
   display.drawPixel(x - 8, y + 2, color);
   uint16_t eyeCol = (color == SSD1306_BLACK) ? SSD1306_WHITE : SSD1306_BLACK;
   display.drawLine(x + 2, y + 1, x + 5, y + 1, eyeCol);
-  display.drawPixel(x + 8, y - 5, color);
-  display.drawPixel(x + 10, y - 8, color);
+  display.drawPixel(x + 8, y - 4, color);
+  display.drawPixel(x + 10, y - 7, color);
 }
 
 void drawLongBreakIcon(int x, int y, uint16_t color) {
   uint16_t oppCol = (color == SSD1306_BLACK) ? SSD1306_WHITE : SSD1306_BLACK;
-  display.fillCircle(x, y, 6, color);
-  display.fillCircle(x + 3, y - 3, 5, oppCol);
-  display.drawPixel(x + 8, y - 4, color);
-  display.drawPixel(x + 7, y - 4, color);
-  display.drawPixel(x + 9, y - 4, color);
-  display.drawPixel(x + 8, y - 5, color);
+  display.fillCircle(x - 1, y, 6, color);
+  display.fillCircle(x + 2, y - 3, 5, oppCol);
+  display.drawPixel(x + 7, y - 3, color);
+  display.drawPixel(x + 6, y - 3, color);
   display.drawPixel(x + 8, y - 3, color);
+  display.drawPixel(x + 7, y - 4, color);
+  display.drawPixel(x + 7, y - 2, color);
 }
 
 void drawStatsIcon(int x, int y, uint16_t color) {
-  display.fillRect(x - 7, y + 2, 3, 6, color);
-  display.fillRect(x - 2, y - 2, 3, 10, color);
-  display.fillRect(x + 3, y - 6, 3, 14, color);
+  display.fillRect(x - 6, y + 2, 3, 5, color);
+  display.fillRect(x - 1, y - 2, 3, 9, color);
+  display.fillRect(x + 4, y - 6, 3, 13, color);
 }
 
 void drawSettingsIcon(int x, int y, uint16_t color) {
   uint16_t oppCol = (color == SSD1306_BLACK) ? SSD1306_WHITE : SSD1306_BLACK;
-  display.fillCircle(x, y, 6, color);
+  display.fillCircle(x, y, 5, color);
   display.fillCircle(x, y, 2, oppCol);
-  display.drawLine(x - 8, y, x - 6, y, color);
-  display.drawLine(x + 6, y, x + 8, y, color);
-  display.drawLine(x, y - 8, x, y - 6, color);
-  display.drawLine(x, y + 6, x, y + 8, color);
-  display.drawPixel(x - 6, y - 5, color);
-  display.drawPixel(x + 5, y - 5, color);
-  display.drawPixel(x - 6, y + 5, color);
-  display.drawPixel(x + 5, y + 5, color);
+  display.drawLine(x - 7, y, x - 5, y, color);
+  display.drawLine(x + 5, y, x + 7, y, color);
+  display.drawLine(x, y - 7, x, y - 5, color);
+  display.drawLine(x, y + 5, x, y + 7, color);
+  display.drawPixel(x - 5, y - 4, color);
+  display.drawPixel(x + 4, y - 4, color);
+  display.drawPixel(x - 5, y + 4, color);
+  display.drawPixel(x + 4, y + 4, color);
 }
 
 void drawMenuCenterCat(int x, int y, uint32_t now) {
   bool blink = (now % 3600) < 180;
 
-  // Ears
-  display.fillTriangle(x - 12, y - 3, x - 10, y - 14, x - 2, y - 6, SSD1306_WHITE);
-  display.fillTriangle(x + 2, y - 6, x + 10, y - 14, x + 12, y - 3, SSD1306_WHITE);
-
   // Head
-  display.fillRoundRect(x - 13, y - 8, 26, 21, 6, SSD1306_WHITE);
+  display.fillRoundRect(x - 11, y - 5, 22, 12, 4, SSD1306_WHITE);
+
+  // Ears
+  display.fillTriangle(x - 9, y - 2, x - 7, y - 9, x - 2, y - 3, SSD1306_WHITE);
+  display.fillTriangle(x + 2, y - 3, x + 7, y - 9, x + 9, y - 2, SSD1306_WHITE);
 
   // Eyes
   if (blink) {
-    display.drawLine(x - 8, y + 1, x - 4, y + 1, SSD1306_BLACK);
-    display.drawLine(x + 4, y + 1, x + 8, y + 1, SSD1306_BLACK);
+    display.drawLine(x - 6, y, x - 3, y, SSD1306_BLACK);
+    display.drawLine(x + 3, y, x + 6, y, SSD1306_BLACK);
   } else {
-    display.fillCircle(x - 6, y + 1, 2, SSD1306_BLACK);
-    display.fillCircle(x + 6, y + 1, 2, SSD1306_BLACK);
-    display.drawPixel(x - 7, y, SSD1306_WHITE);
-    display.drawPixel(x + 5, y, SSD1306_WHITE);
+    display.fillCircle(x - 5, y, 2, SSD1306_BLACK);
+    display.fillCircle(x + 5, y, 2, SSD1306_BLACK);
+    display.drawPixel(x - 6, y - 1, SSD1306_WHITE);
+    display.drawPixel(x + 4, y - 1, SSD1306_WHITE);
   }
 
   // Nose and mouth
-  display.drawPixel(x, y + 5, SSD1306_BLACK);
-  display.drawLine(x, y + 6, x - 3, y + 7, SSD1306_BLACK);
-  display.drawLine(x, y + 6, x + 3, y + 7, SSD1306_BLACK);
+  display.drawPixel(x, y + 2, SSD1306_BLACK);
+  display.drawLine(x, y + 3, x - 2, y + 4, SSD1306_BLACK);
+  display.drawLine(x, y + 3, x + 2, y + 4, SSD1306_BLACK);
 
   // Cheeks / Whiskers
-  display.drawLine(x - 9, y + 4, x - 15, y + 3, SSD1306_BLACK);
-  display.drawLine(x + 9, y + 4, x + 15, y + 3, SSD1306_BLACK);
+  display.drawLine(x - 8, y + 2, x - 13, y + 1, SSD1306_BLACK);
+  display.drawLine(x + 8, y + 2, x + 13, y + 1, SSD1306_BLACK);
 
   // Radiant joy rays (3 on left, 3 on right)
-  display.drawLine(x - 16, y - 6, x - 20, y - 9, SSD1306_WHITE);
-  display.drawLine(x - 18, y,     x - 23, y,     SSD1306_WHITE);
-  display.drawLine(x - 16, y + 6, x - 20, y + 9, SSD1306_WHITE);
+  display.drawLine(x - 14, y - 4, x - 18, y - 7, SSD1306_WHITE);
+  display.drawLine(x - 15, y,     x - 20, y,     SSD1306_WHITE);
+  display.drawLine(x - 14, y + 4, x - 18, y + 7, SSD1306_WHITE);
 
-  display.drawLine(x + 16, y - 6, x + 20, y - 9, SSD1306_WHITE);
-  display.drawLine(x + 18, y,     x + 23, y,     SSD1306_WHITE);
-  display.drawLine(x + 16, y + 6, x + 20, y + 9, SSD1306_WHITE);
+  display.drawLine(x + 14, y - 4, x + 18, y - 7, SSD1306_WHITE);
+  display.drawLine(x + 15, y,     x + 20, y,     SSD1306_WHITE);
+  display.drawLine(x + 14, y + 4, x + 18, y + 7, SSD1306_WHITE);
 
   // Sparkles above cat
-  display.drawPixel(x - 11, y - 18, SSD1306_WHITE);
-  display.drawPixel(x + 11, y - 18, SSD1306_WHITE);
+  display.drawPixel(x - 10, y - 13, SSD1306_WHITE);
+  display.drawPixel(x + 10, y - 13, SSD1306_WHITE);
 }
 
 void drawMenuStars() {
@@ -715,23 +715,27 @@ void drawMenuStars() {
   display.drawPixel(4, 59, SSD1306_WHITE);
   display.drawPixel(123, 59, SSD1306_WHITE);
 
-  display.drawPixel(16, 16, SSD1306_WHITE);
-  display.drawPixel(15, 16, SSD1306_WHITE);
-  display.drawPixel(17, 16, SSD1306_WHITE);
-  display.drawPixel(16, 15, SSD1306_WHITE);
-  display.drawPixel(16, 17, SSD1306_WHITE);
+  // Left sky sparkles
+  display.drawPixel(12, 12, SSD1306_WHITE);
+  display.drawPixel(11, 12, SSD1306_WHITE);
+  display.drawPixel(13, 12, SSD1306_WHITE);
+  display.drawPixel(12, 11, SSD1306_WHITE);
+  display.drawPixel(12, 13, SSD1306_WHITE);
 
-  display.drawPixel(25, 27, SSD1306_WHITE);
-  display.drawPixel(11, 42, SSD1306_WHITE);
+  display.drawPixel(20, 10, SSD1306_WHITE);
+  display.drawPixel(8, 24, SSD1306_WHITE);
+  display.drawPixel(6, 36, SSD1306_WHITE);
 
-  display.drawPixel(111, 16, SSD1306_WHITE);
-  display.drawPixel(110, 16, SSD1306_WHITE);
-  display.drawPixel(112, 16, SSD1306_WHITE);
-  display.drawPixel(111, 15, SSD1306_WHITE);
-  display.drawPixel(111, 17, SSD1306_WHITE);
+  // Right sky sparkles
+  display.drawPixel(115, 12, SSD1306_WHITE);
+  display.drawPixel(114, 12, SSD1306_WHITE);
+  display.drawPixel(116, 12, SSD1306_WHITE);
+  display.drawPixel(115, 11, SSD1306_WHITE);
+  display.drawPixel(115, 13, SSD1306_WHITE);
 
-  display.drawPixel(102, 27, SSD1306_WHITE);
-  display.drawPixel(116, 42, SSD1306_WHITE);
+  display.drawPixel(107, 10, SSD1306_WHITE);
+  display.drawPixel(119, 24, SSD1306_WHITE);
+  display.drawPixel(121, 36, SSD1306_WHITE);
 }
 
 void renderMenu() {
@@ -761,22 +765,22 @@ void renderMenu() {
   {
     bool active = (selectedMenuIndex == ARC_MENU_STATS);
     uint16_t col = active ? SSD1306_BLACK : SSD1306_WHITE;
-    drawStatsIcon(24, 38, col);
-    drawArcText(24, 50, "STATS", col, 1);
+    drawStatsIcon(16, 40, col);
+    drawArcText(15, 51, "STATS", col, 1);
   }
 
   // Sector 1: SHORT BREAK (5m)
   {
     bool active = (selectedMenuIndex == ARC_MENU_SHORT_BREAK);
     uint16_t col = active ? SSD1306_BLACK : SSD1306_WHITE;
-    drawShortBreakIcon(38, 25, col);
+    drawShortBreakIcon(35, 22, col);
     char buf[8];
     snprintf(buf, sizeof(buf), "%dm", shortBreakMinutes);
     if (active) {
-      drawArcText(38, 29, "BREAK", col, 1);
-      drawArcText(38, 37, buf, col, 1);
+      drawArcText(33, 31, "BREAK", col, 1);
+      drawArcText(37, 40, buf, col, 1);
     } else {
-      drawArcText(38, 33, buf, col, 1);
+      drawArcText(35, 34, buf, col, 1);
     }
   }
 
@@ -784,25 +788,25 @@ void renderMenu() {
   {
     bool active = (selectedMenuIndex == ARC_MENU_FOCUS);
     uint16_t col = active ? SSD1306_BLACK : SSD1306_WHITE;
-    drawFocusIcon(64, 18, col);
+    drawFocusIcon(64, 15, col);
     char buf[8];
     snprintf(buf, sizeof(buf), "%dm", focusMinutes);
     drawArcText(64, 25, "FOCUS", col, 1);
-    drawArcText(64, 34, buf, col, 1);
+    drawArcText(64, 35, buf, col, 1);
   }
 
   // Sector 3: LONG BREAK (15m)
   {
     bool active = (selectedMenuIndex == ARC_MENU_LONG_BREAK);
     uint16_t col = active ? SSD1306_BLACK : SSD1306_WHITE;
-    drawLongBreakIcon(89, 25, col);
+    drawLongBreakIcon(93, 22, col);
     char buf[8];
     snprintf(buf, sizeof(buf), "%dm", longBreakMinutes);
     if (active) {
-      drawArcText(89, 29, "LONG", col, 1);
-      drawArcText(89, 37, buf, col, 1);
+      drawArcText(95, 31, "LONG", col, 1);
+      drawArcText(91, 40, buf, col, 1);
     } else {
-      drawArcText(89, 33, buf, col, 1);
+      drawArcText(93, 34, buf, col, 1);
     }
   }
 
@@ -810,12 +814,12 @@ void renderMenu() {
   {
     bool active = (selectedMenuIndex == ARC_MENU_SETTINGS);
     uint16_t col = active ? SSD1306_BLACK : SSD1306_WHITE;
-    drawSettingsIcon(103, 38, col);
-    drawArcText(103, 50, "SET", col, 1);
+    drawSettingsIcon(112, 40, col);
+    drawArcText(112, 51, "SET", col, 1);
   }
 
   // 7. Central companion cat
-  drawMenuCenterCat(ARC_CENTER_X, 51, now);
+  drawMenuCenterCat(ARC_CENTER_X, 57, now);
 
   // 8. Subtle status indicators in upper frame
   if (netStatus == NET_AGENT_ONLINE) {
