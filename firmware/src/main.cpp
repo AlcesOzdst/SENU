@@ -742,6 +742,33 @@ void drawMenuStars() {
   display.drawPixel(121, 36, SSD1306_WHITE);
 }
 
+void drawMiniChar(int x, int y, char c, uint16_t color) {
+  uint16_t glyph = 0;
+  switch (c) {
+    case 'S': case 's': glyph = 0b111100111001111; break;
+    case 'T': case 't': glyph = 0b111010010010010; break;
+    case 'A': case 'a': glyph = 0b010101111101101; break;
+    default: glyph = 0; break;
+  }
+  for (int r = 0; r < 5; r++) {
+    for (int col = 0; col < 3; col++) {
+      int bitIdx = 14 - (r * 3 + col);
+      if ((glyph >> bitIdx) & 1) {
+        display.drawPixel(x + col, y + r, color);
+      }
+    }
+  }
+}
+
+void drawMiniText(int x, int y, const char *str, uint16_t color) {
+  int len = strlen(str);
+  int totalW = len * 4 - 1;
+  int startX = x - totalW / 2;
+  for (int i = 0; i < len; i++) {
+    drawMiniChar(startX + i * 4, y, str[i], color);
+  }
+}
+
 void renderMenu() {
   uint32_t now = millis();
 
@@ -765,11 +792,11 @@ void renderMenu() {
   drawArcSegmentLine(324.0f, SSD1306_WHITE);
 
   // 6. Draw each sector's icon & label (Clean wedge view: no duration text under names)
-  // Sector 0: STATS (Logo removed per request: only "STATS" label centered in sector)
+  // Sector 0: STAT (Compact 3x5 font fits cleanly inside Sector 0 column without overflow)
   {
     bool active = (selectedMenuIndex == ARC_MENU_STATS);
     uint16_t col = active ? SSD1306_BLACK : SSD1306_WHITE;
-    drawArcText(16, 44, "STATS", col, 1);
+    drawMiniText(13, 47, "STAT", col);
   }
 
   // Sector 1: SHORT BREAK
@@ -836,14 +863,22 @@ void executeMenuSingleTap(uint8_t item) {
   soundShortChirp();
   switch (item) {
   case ARC_MENU_FOCUS:
-    pomoSession = POMO_SESS_FOCUS;
     if (sessionActive && timerRemainingSeconds > 0) {
-      // PRESERVE SAVED STATE: Do not reset to preset time when returning from menu!
-      currentScreen = SCREEN_FOCUS_TIMER;
-      pomoScreen = timerRunning ? POMO_SCREEN_FOCUS : POMO_SCREEN_PAUSE;
-      Serial.printf("[POMO] Restored saved FOCUS session (%lu s remaining)\n", (unsigned long)timerRemainingSeconds);
+      if (pomoSession == POMO_SESS_FOCUS) {
+        // Restore saved Focus session
+        currentScreen = SCREEN_FOCUS_TIMER;
+        pomoScreen = timerRunning ? POMO_SCREEN_FOCUS : POMO_SCREEN_PAUSE;
+        Serial.printf("[POMO] Restored saved FOCUS session (%lu s remaining)\n", (unsigned long)timerRemainingSeconds);
+      } else {
+        // Another session (Break) is active! Block starting Focus!
+        currentScreen = SCREEN_FOCUS_TIMER;
+        pomoScreen = timerRunning ? POMO_SCREEN_BREAK : POMO_SCREEN_PAUSE;
+        soundDoubleChirp();
+        Serial.println("[POMO] BREAK session already active! Reset or let timer reach zero before starting FOCUS.");
+      }
     } else {
       // Fresh session in customize mode
+      pomoSession = POMO_SESS_FOCUS;
       pomoScreen = POMO_SCREEN_FOCUS;
       timerRemainingSeconds = (uint32_t)focusMinutes * 60;
       timerRunning = false;
@@ -854,10 +889,20 @@ void executeMenuSingleTap(uint8_t item) {
     break;
 
   case ARC_MENU_SHORT_BREAK:
-    if (sessionActive && timerRemainingSeconds > 0 && pomoSession == POMO_SESS_SHORT_BREAK) {
-      currentScreen = SCREEN_FOCUS_TIMER;
-      pomoScreen = timerRunning ? POMO_SCREEN_BREAK : POMO_SCREEN_PAUSE;
-      Serial.printf("[POMO] Restored saved SHORT BREAK (%lu s remaining)\n", (unsigned long)timerRemainingSeconds);
+    if (sessionActive && timerRemainingSeconds > 0) {
+      if (pomoSession == POMO_SESS_SHORT_BREAK) {
+        // Restore saved Short Break session
+        currentScreen = SCREEN_FOCUS_TIMER;
+        pomoScreen = timerRunning ? POMO_SCREEN_BREAK : POMO_SCREEN_PAUSE;
+        Serial.printf("[POMO] Restored saved SHORT BREAK (%lu s remaining)\n", (unsigned long)timerRemainingSeconds);
+      } else {
+        // Another session (Focus or Long Break) is active! Block starting Short Break!
+        currentScreen = SCREEN_FOCUS_TIMER;
+        pomoScreen = (pomoSession == POMO_SESS_FOCUS) ? (timerRunning ? POMO_SCREEN_FOCUS : POMO_SCREEN_PAUSE)
+                                                      : (timerRunning ? POMO_SCREEN_BREAK : POMO_SCREEN_PAUSE);
+        soundDoubleChirp();
+        Serial.println("[POMO] FOCUS/LONG session already active! Reset or let timer reach zero before starting BREAK.");
+      }
     } else {
       pomoSession = POMO_SESS_SHORT_BREAK;
       pomoScreen = POMO_SCREEN_BREAK;
@@ -870,10 +915,20 @@ void executeMenuSingleTap(uint8_t item) {
     break;
 
   case ARC_MENU_LONG_BREAK:
-    if (sessionActive && timerRemainingSeconds > 0 && pomoSession == POMO_SESS_LONG_BREAK) {
-      currentScreen = SCREEN_FOCUS_TIMER;
-      pomoScreen = timerRunning ? POMO_SCREEN_BREAK : POMO_SCREEN_PAUSE;
-      Serial.printf("[POMO] Restored saved LONG BREAK (%lu s remaining)\n", (unsigned long)timerRemainingSeconds);
+    if (sessionActive && timerRemainingSeconds > 0) {
+      if (pomoSession == POMO_SESS_LONG_BREAK) {
+        // Restore saved Long Break session
+        currentScreen = SCREEN_FOCUS_TIMER;
+        pomoScreen = timerRunning ? POMO_SCREEN_BREAK : POMO_SCREEN_PAUSE;
+        Serial.printf("[POMO] Restored saved LONG BREAK (%lu s remaining)\n", (unsigned long)timerRemainingSeconds);
+      } else {
+        // Another session (Focus or Short Break) is active! Block starting Long Break!
+        currentScreen = SCREEN_FOCUS_TIMER;
+        pomoScreen = (pomoSession == POMO_SESS_FOCUS) ? (timerRunning ? POMO_SCREEN_FOCUS : POMO_SCREEN_PAUSE)
+                                                      : (timerRunning ? POMO_SCREEN_BREAK : POMO_SCREEN_PAUSE);
+        soundDoubleChirp();
+        Serial.println("[POMO] FOCUS/SHORT session already active! Reset or let timer reach zero before starting LONG BREAK.");
+      }
     } else {
       pomoSession = POMO_SESS_LONG_BREAK;
       pomoScreen = POMO_SCREEN_BREAK;
@@ -1303,6 +1358,17 @@ void renderFocusTimer() {
 void renderAlarmScreen() {
   display.drawRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SSD1306_WHITE);
 
+  int curH = 0, curM = 0;
+  if (rtcFound) {
+    DateTime cur = rtc.now();
+    curH = cur.hour();
+    curM = cur.minute();
+  } else {
+    unsigned long sec = millis() / 1000;
+    curH = (sec / 3600) % 24;
+    curM = (sec % 3600) / 60;
+  }
+
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(4, 3);
@@ -1311,7 +1377,12 @@ void renderAlarmScreen() {
   } else if (snoozeActive) {
     display.print("ALARM (SNOOZED +5M)");
   } else {
-    display.print("ALARM SETUP");
+    display.print("SET ALARM");
+    // Display current real-time in top-right header so user knows current time when setting alarm
+    char nowBuf[16];
+    snprintf(nowBuf, sizeof(nowBuf), "NOW %02d:%02d", curH, curM);
+    display.setCursor(70, 3);
+    display.print(nowBuf);
   }
   display.drawLine(2, 12, 125, 12, SSD1306_WHITE);
 
@@ -1341,8 +1412,8 @@ void renderAlarmScreen() {
 
     display.setTextSize(1);
     char alarmStatusBuf[32];
-    snprintf(alarmStatusBuf, sizeof(alarmStatusBuf), "Status: %s (Hedwig)",
-             alarmEnabled ? "ACTIVE" : "OFF");
+    snprintf(alarmStatusBuf, sizeof(alarmStatusBuf), "Now:%02d:%02d Alarm:%s",
+             curH, curM, alarmEnabled ? "ON (Hedwig)" : "OFF");
     drawCarouselText(alarmStatusBuf, 8, 39, 19, now);
 
     char alarmFootBuf[32];
@@ -2048,20 +2119,28 @@ void loop() {
     } else if (currentScreen == SCREEN_MENU) {
       if (pendingMenuSingleClick) {
         // DOUBLE-TAP detected within DOUBLE_TAP_WINDOW_MS:
-        // Quick-start default 25m Pomodoro session immediately!
         pendingMenuSingleClick = false;
-        pomoSession = POMO_SESS_FOCUS;
-        pomoScreen = POMO_SCREEN_FOCUS;
-        focusMinutes = 25;
-        timerRemainingSeconds = 25 * 60;
-        timerRunning = true;
-        sessionActive = true;
-        if (rtcFound) {
-          timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+        if (sessionActive && timerRemainingSeconds > 0 && pomoSession != POMO_SESS_FOCUS) {
+          // Break session already active! Do NOT overwrite it with a focus session!
+          currentScreen = SCREEN_FOCUS_TIMER;
+          pomoScreen = timerRunning ? POMO_SCREEN_BREAK : POMO_SCREEN_PAUSE;
+          soundDoubleChirp();
+          Serial.println("[MENU] Break session already active! Reset or let timer reach zero before starting FOCUS.");
+        } else {
+          // Quick-start default 25m Pomodoro session immediately!
+          pomoSession = POMO_SESS_FOCUS;
+          pomoScreen = POMO_SCREEN_FOCUS;
+          focusMinutes = 25;
+          timerRemainingSeconds = 25 * 60;
+          timerRunning = true;
+          sessionActive = true;
+          if (rtcFound) {
+            timerEndEpoch = rtc.now().unixtime() + timerRemainingSeconds;
+          }
+          currentScreen = SCREEN_FOCUS_TIMER;
+          soundDoubleChirp();
+          Serial.println("[MENU] Double-tap detected -> Quick-started default 25m Pomodoro!");
         }
-        currentScreen = SCREEN_FOCUS_TIMER;
-        soundDoubleChirp();
-        Serial.println("[MENU] Double-tap detected -> Quick-started default 25m Pomodoro!");
         displayNeedsUpdate = true;
       } else {
         // FIRST TAP: Start double-tap detection window
